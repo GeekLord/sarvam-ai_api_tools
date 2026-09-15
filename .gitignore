@@ -1,0 +1,50 @@
+# Secrets & Environment variables
+.env
+.env*.local
+.env.*
+!.env.sample
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Sarvam AI Image Renamer artifacts & cache
+.sarvam_cache.json
+rename_history.json
+image_manifest.json
+image_manifest.csv
+IMAGE_CATALOG.md
+renamed/
+
+# Sarvam AI Audio Transcription outputs
+sarvam_transcripts/
+*.srt
+*.vtt
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.tmp
+*.log

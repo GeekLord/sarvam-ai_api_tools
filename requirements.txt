@@ -1,0 +1,7 @@
+# Core Dependencies (Shared across all Sarvam AI API Tools)
+sarvamai>=0.1.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Image Renamer & Metadata Cataloger (sarvam_image_renamer.py)
+pillow>=10.0.0
