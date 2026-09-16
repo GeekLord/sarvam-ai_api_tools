@@ -66,6 +66,10 @@ ocr_manifest.json
 ocr_manifest.csv
 OCR_CATALOG.md
 
+# Gradio Web Front End runtime artifacts (app.py)
+flagged/
+.gradio/
+
 # IDE & OS files
 .DS_Store
 Thumbs.db
