@@ -12,8 +12,9 @@ A suite of standalone Python CLI tools that wrap [Sarvam AI](https://docs.sarvam
 | :--- | :--- | :--- |
 | `transcribe_sarvam.py` | Speech-to-Text (`saaras:v4`) | Batch audio transcription with speaker diarization; emits `.txt`, `.csv`, `.json` per file into `sarvam_transcripts/` |
 | `sarvam_image_renamer.py` | Document Intelligence | Recursive image analysis, slug renaming, and `IMAGE_CATALOG.md` / `image_manifest.{json,csv}` catalogs |
-
-Planned (documented in `README.md`, not yet implemented): translation (`mayura`), TTS (`bulbul`), document OCR.
+| `sarvam_translate.py` | Translation (`mayura:v1`) | Batch/literal text translation across Indic languages and English; emits per-file `.txt`/`.json`, `translations_manifest.{json,csv}`, and `TRANSLATIONS.md` into `sarvam_translations/` |
+| `sarvam_tts.py` | Text-to-Speech (`bulbul:v3`) | Voice synthesis with selectable speakers, codecs, and sample rates; emits per-unit audio + `.json`, `tts_manifest.{json,csv}`, and `TTS_CATALOG.md` into `sarvam_tts_audio/` |
+| `sarvam_doc_ocr.py` | Document Intelligence | Digitizes PDFs/images to Markdown/HTML/text with table parsing; emits per-document text + `.json`, `ocr_manifest.{json,csv}`, and `OCR_CATALOG.md` into `sarvam_ocr_output/` |
 
 ## Architecture Rules
 
