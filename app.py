@@ -149,7 +149,10 @@ def run_translate(
     # singleton. In this long-lived server that dict would otherwise grow
     # unbounded and be shared across every request. Reset it per call so no
     # cross-request state accumulates (cache_path is None, so nothing is
-    # flushed to disk and this is purely an in-memory reset).
+    # flushed to disk and this is purely an in-memory reset). This reset
+    # assumes serialized execution (the default demo.queue() concurrency);
+    # if request concurrency is ever raised, key the cache per request
+    # instead so concurrent calls do not clobber each other's chunk cache.
     translate_tool.STATE.cache = {}
     try:
         result = translate_tool.translate_unit(client, text, "gradio", args, limit)
