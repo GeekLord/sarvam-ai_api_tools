@@ -37,6 +37,35 @@ sarvam_transcripts/
 *.srt
 *.vtt
 
+# Sarvam AI Text Translation outputs & cache (sarvam_translate.py)
+sarvam_translations/
+.sarvam_translate_cache.json
+translations_manifest.json
+translations_manifest.csv
+TRANSLATIONS.md
+
+# Sarvam AI Text-to-Speech outputs (sarvam_tts.py)
+sarvam_tts_audio/
+tts_manifest.json
+tts_manifest.csv
+TTS_CATALOG.md
+*.mp3
+*.flac
+*.aac
+*.opus
+# NOTE: *.wav is intentionally NOT globally ignored. TTS wav output lands in
+# the already-ignored sarvam_tts_audio/ folder, while transcribe_sarvam.py
+# accepts .wav as INPUT and users may keep .wav assets in the repo; a global
+# *.wav ignore would silently hide those input files. Use a dedicated output
+# folder (the default) to keep generated wav audio out of git.
+
+# Sarvam AI Document OCR outputs & cache (sarvam_doc_ocr.py)
+sarvam_ocr_output/
+.sarvam_ocr_cache.json
+ocr_manifest.json
+ocr_manifest.csv
+OCR_CATALOG.md
+
 # IDE & OS files
 .DS_Store
 Thumbs.db
