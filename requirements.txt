@@ -7,9 +7,18 @@ requests>=2.31.0
 pillow>=10.0.0
 
 # Web Front End (app.py)
-# Cap below 5.x: the UI is validated against gradio 4.44.1 and relies on
-# 4.x event / gr.update / gr.File semantics that gradio 5.x changes.
-gradio>=4.0.0,<5
-# gradio 4.x uses huggingface_hub APIs (HfFolder/whoami) removed in hub 1.0+,
-# so cap the transitive dependency to keep `import gradio` working.
-huggingface_hub<1.0
+# gradio 5.x: the UI is validated against gradio 5.50.0. We moved off the 4.x
+# line because gradio 4.44.1 hard-pins the buggy gradio-client 1.3.0, whose
+# get_type() crashes with "argument of type 'bool' is not iterable" when the
+# newer fastapi/pydantic emit boolean `additionalProperties` JSON schemas at
+# launch. gradio 5.x ships a fixed gradio-client (>=1.14) that resolves this.
+# app.py's gr.update / gr.File / event-wiring / .queue() constructs were
+# re-verified to work unchanged under gradio 5.x.
+gradio>=5.0.0,<6
+# On Python 3.13 the stdlib `audioop`/`pyaudioop` modules were removed
+# (PEP 594). gradio -> pydub imports them, so pull in the `audioop-lts`
+# backport there; it is only needed on 3.13+ (a no-op on 3.8-3.12).
+audioop-lts; python_version >= "3.13"
+# gradio 5.x requires huggingface_hub>=0.33.5,<2.0. Cap below 2.0 to avoid a
+# future major-version break in the transitive dependency.
+huggingface_hub>=0.33.5,<2.0

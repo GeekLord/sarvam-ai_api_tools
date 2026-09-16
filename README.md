@@ -428,6 +428,8 @@ The front end ships as part of the standard dependencies, so the usual install n
 pip install -r requirements.txt
 ```
 
+> **Python 3.13 note:** The front end uses `gradio` 5.x, which works on Python 3.8 through 3.13. On Python 3.13 the stdlib `audioop`/`pyaudioop` modules were removed (PEP 594), so `requirements.txt` automatically installs the `audioop-lts` backport there. No manual steps are needed: `pip install -r requirements.txt` is enough on every supported version.
+
 ### Launching the app
 Start the local server (the launch command is the same on every platform):
 ```bash

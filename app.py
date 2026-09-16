@@ -35,14 +35,42 @@ from pathlib import Path
 
 # Guard the gradio import so the module can be inspected (and give a friendly
 # hint) even when gradio is not installed. Mirrors the HAS_SARVAM pattern used
-# by the tool scripts.
+# by the tool scripts. We keep the ACTUAL import error around (GRADIO_IMPORT_ERROR)
+# so the failure message can surface the real cause instead of a misleading
+# "gradio is not installed" hint. This matters on Python 3.13, where gradio
+# imports pydub -> audioop/pyaudioop (removed from the stdlib in PEP 594); a
+# bare "not installed" message hid that the audioop-lts backport was missing.
 try:
     import gradio as gr
 
     HAS_GRADIO = True
-except ImportError:
+    GRADIO_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:
     gr = None  # type: ignore[assignment]
     HAS_GRADIO = False
+    GRADIO_IMPORT_ERROR = exc
+
+
+def _gradio_error_detail() -> str:
+    """
+    Build an actionable message describing why gradio could not be imported.
+
+    Surfaces the real underlying ImportError (and the offending module, when
+    known) instead of assuming gradio itself is simply not installed, so a
+    transitive failure like a missing ``audioop``/``pyaudioop`` backport on
+    Python 3.13 is not masked.
+    """
+    base = (
+        "The 'gradio' package (or one of its dependencies) failed to import. "
+        "Install dependencies with: pip install -r requirements.txt"
+    )
+    exc = GRADIO_IMPORT_ERROR
+    if exc is None:
+        return base
+    missing = getattr(exc, "name", None)
+    offending = f" (missing module: {missing})" if missing else ""
+    return f"{base}\nUnderlying import error{offending}: {exc}"
+
 
 # Sarvam AI SDK (needed to instantiate a client per call). Guarded like the
 # tool scripts so importing app.py never crashes on a missing dependency.
@@ -306,10 +334,7 @@ def build_ui():
     starting a server or needing an API key.
     """
     if not HAS_GRADIO:
-        raise RuntimeError(
-            "gradio is not installed. Install dependencies with "
-            "pip install -r requirements.txt."
-        )
+        raise RuntimeError(_gradio_error_detail()) from GRADIO_IMPORT_ERROR
 
     translate_langs = ["auto"] + sorted(translate_tool.SUPPORTED_LANGUAGES)
     translate_targets = sorted(translate_tool.SUPPORTED_LANGUAGES)
@@ -517,8 +542,8 @@ def build_ui():
 def main() -> int:
     """Launch the local Gradio web UI. Returns a process exit code."""
     if not HAS_GRADIO:
-        print("ERROR: 'gradio' package is required to run the web front end.")
-        print("Please install dependencies: pip install -r requirements.txt")
+        print("ERROR: the web front end could not start.")
+        print(_gradio_error_detail())
         return 1
 
     demo = build_ui()
