@@ -19,6 +19,7 @@ A suite of standalone Python CLI tools that wrap [Sarvam AI](https://docs.sarvam
 ## Architecture Rules
 
 - **One tool = one script.** Do not introduce packages, shared modules, or `src/` layouts. Duplicating a helper such as `get_api_key` across scripts is intentional and correct.
+- **The Gradio front end (`app.py`) is an additive UI layer, not an exception to the rule above.** It imports each tool script's existing worker functions and constants and calls them in-process; it must not refactor, move, or reshape the five tool scripts into a shared package. "One tool = one script" still holds: `app.py` is simply a new root-level artifact alongside them, and it currently wires only the single-input tools (Translate, Text-to-Speech, Document OCR).
 - **Portable by default.** Resolve the target directory from a positional arg (default: cwd), then `Path(...).resolve()`. Never assume the script lives next to the data.
 - **Stdlib first.** Dependencies are limited to `sarvamai`, `python-dotenv`, `requests`, and `pillow`. Adding a dependency requires updating `requirements.txt` with a `>=` floor and a comment marking which tool needs it.
 - **Optional imports are guarded.** Wrap non-critical imports in `try/except ImportError` and set a `HAS_*` flag (`HAS_SARVAM`, `HAS_PIL`); `load_dotenv()` failure must never crash the script.
