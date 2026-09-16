@@ -5,3 +5,11 @@ requests>=2.31.0
 
 # Image Renamer & Metadata Cataloger (sarvam_image_renamer.py)
 pillow>=10.0.0
+
+# Web Front End (app.py)
+# Cap below 5.x: the UI is validated against gradio 4.44.1 and relies on
+# 4.x event / gr.update / gr.File semantics that gradio 5.x changes.
+gradio>=4.0.0,<5
+# gradio 4.x uses huggingface_hub APIs (HfFolder/whoami) removed in hub 1.0+,
+# so cap the transitive dependency to keep `import gradio` working.
+huggingface_hub<1.0
