@@ -7,7 +7,7 @@
 
 Python command-line tools for [Sarvam AI](https://www.sarvam.ai/) APIs. The suite currently includes five tools: speech-to-text audio transcription with speaker diarization, automated image renaming with metadata catalog generation, text translation across Indic languages and English, text-to-speech voice synthesis, and document OCR and parsing.
 
-Each tool runs standalone, handles API rate limits with polite request cooldowns and backoff, and shares a single API key configuration.
+Each tool runs standalone, handles API rate limits with polite request cooldowns and backoff, and shares a single API key configuration. An optional [Gradio web front end](#web-front-end-apppy) (`app.py`) is also included so you can interactively test the Translation, Text-to-Speech, and Document OCR tools from your browser.
 
 ---
 
@@ -409,6 +409,34 @@ sarvam_ocr_output/
 
 ---
 
+## Web Front End (`app.py`)
+
+`app.py` is an optional [Gradio](https://www.gradio.app/) web UI that lets you interactively test the suite's tools from your browser instead of the command line. It is an additive layer: rather than reimplementing anything, it imports each tool script's existing worker functions and constants and calls them in-process, so the "one tool = one script" design of the CLIs is untouched.
+
+### Features
+* **Three tabs**: The UI exposes the tools that operate on a single input:
+  * **Translate**: source and target language, model, mode, output script, numerals format, and speaker gender, returning the translated text and the detected source language.
+  * **Text-to-Speech**: language, model, speaker (refreshed per model), sample rate, codec, and pace, plus `bulbul:v3` temperature and `bulbul:v2` pitch, loudness, and enable-preprocessing, with in-browser audio playback and download.
+  * **Document OCR**: file upload with language, output format, content type, and an optional model, rendering the extracted content as Markdown alongside a page-count/job summary.
+* **CLI tools only**: Speech Transcription (`transcribe_sarvam.py`) and the Image Renamer (`sarvam_image_renamer.py`) are batch/folder oriented and remain command-line only; they are intentionally not exposed in the UI.
+* **API-key field with fallback**: A password field accepts your Sarvam AI key. Leave it blank to fall back to the same `SARVAM_API_KEY` environment variable or `.env` file the CLIs use. The key is never logged or echoed.
+* **Non-destructive**: Generated audio and uploads are handled in temporary files; your inputs are never modified.
+
+### Installation
+The front end ships as part of the standard dependencies, so the usual install now also pulls in `gradio`:
+```bash
+pip install -r requirements.txt
+```
+
+### Launching the app
+Start the local server (the launch command is the same on every platform):
+```bash
+python app.py
+```
+Then open the printed local URL in your browser (by default `http://127.0.0.1:7860`). Press `Ctrl + C` in the terminal to stop the server.
+
+---
+
 ## Project Structure
 
 ```
@@ -417,6 +445,7 @@ sarvam-ai_api_tools/
 ├── .gitignore                # Excludes secrets, caches, and generated files
 ├── requirements.txt          # Python dependencies
 ├── README.md                 # Project documentation
+├── app.py                    # Gradio web front end to test the tools
 ├── sarvam_doc_ocr.py         # Tool: Document OCR and Parser
 ├── sarvam_image_renamer.py   # Tool: Image Renamer and Metadata Cataloger
 ├── sarvam_translate.py       # Tool: Text Translation
