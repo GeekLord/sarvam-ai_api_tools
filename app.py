@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -208,7 +209,7 @@ def run_stt(
 
     # English translation & DOCX generation
     english_translation = ""
-    docx_file_path: str | None = None
+    docx_file_paths: list[str] = []
 
     if auto_translate:
         text_to_translate = timeline_text if (segments and timeline_lines) else transcript
@@ -235,24 +236,58 @@ def run_stt(
             except Exception as tr_err:
                 english_translation = f"[Translation note: {tr_err}]"
 
-        # Generate .docx document with the input file name in a temporary directory
+        # Generate 2 .docx documents in a temporary directory
         if getattr(stt_tool, "HAS_DOCX", False):
             temp_dir = Path(tempfile.mkdtemp(prefix="sarvam_stt_"))
-            docx_output_path = temp_dir / f"{path.stem}.docx"
+            clean_lang = stt_tool.get_clean_language_name(detected_lang)
+            lang_display = str(stt_tool.SUPPORTED_LANGUAGES.get(detected_lang, detected_lang))
+
+            # 1. Original Language DOCX: <stem>_<Language>.docx
+            if clean_lang.lower() == "english" or detected_lang == "en-IN":
+                orig_docx_name = f"{path.stem}_English.docx"
+            else:
+                orig_docx_name = f"{path.stem}_{clean_lang}.docx"
+
+            orig_docx_path = temp_dir / orig_docx_name
             try:
-                stt_tool.generate_translation_docx(
+                stt_tool.generate_transcript_docx(
                     audio_path=path,
-                    result_json=result,
-                    translated_text=english_translation or transcript,
-                    source_lang=detected_lang,
-                    output_docx_path=docx_output_path,
-                    asr_model=model,
-                    translation_model=translation_model,
+                    output_docx_path=orig_docx_path,
+                    title=f"Audio Transcript ({clean_lang})",
+                    meta_rows=[
+                        ("Source Audio File", path.name),
+                        ("Language", f"{lang_display} ({detected_lang})" if detected_lang not in ("auto-detected", "unknown", clean_lang) else lang_display),
+                        ("Export Date", time.strftime("%Y-%m-%d %H:%M:%S")),
+                    ],
+                    segments=segments if segments else None,
+                    raw_text=transcript if not segments else None,
                 )
-                docx_file_path = str(docx_output_path)
+                docx_file_paths.append(str(orig_docx_path))
             except Exception as docx_err:
-                print(f"[!] Warning: failed to generate .docx in web UI: {docx_err}")
-                docx_file_path = None
+                print(f"[!] Warning: failed to generate original .docx in web UI: {docx_err}")
+
+            # 2. English Translation DOCX: <stem>_English.docx (if original is not English)
+            if clean_lang.lower() != "english" and detected_lang != "en-IN" and english_translation:
+                eng_docx_name = f"{path.stem}_English.docx"
+                eng_docx_path = temp_dir / eng_doc_name
+                try:
+                    tr_lines = [ln.strip() for ln in english_translation.split("\n") if ln.strip()]
+                    stt_tool.generate_transcript_docx(
+                        audio_path=path,
+                        output_docx_path=eng_docx_path,
+                        title="Audio Transcript (English Translation)",
+                        meta_rows=[
+                            ("Source Audio File", path.name),
+                            ("Original Language", f"{lang_display} ({detected_lang})" if detected_lang not in ("auto-detected", "unknown", clean_lang) else lang_display),
+                            ("Translated Language", "English (en-IN)"),
+                            ("Export Date", time.strftime("%Y-%m-%d %H:%M:%S")),
+                        ],
+                        dialogue_lines=tr_lines if segments else None,
+                        raw_text=english_translation if not segments else None,
+                    )
+                    docx_file_paths.append(str(eng_docx_path))
+                except Exception as docx_err:
+                    print(f"[!] Warning: failed to generate english .docx in web UI: {docx_err}")
     else:
         english_translation = "[Translation disabled via option]"
 
@@ -261,7 +296,7 @@ def run_stt(
         english_translation,
         timeline_text,
         detected_lang,
-        docx_file_path,
+        docx_file_paths if docx_file_paths else None,
     )
 
 
@@ -519,7 +554,7 @@ def build_ui():
                     stt_english = gr.Textbox(label="English Translation (en-IN)", lines=6)
                 with gr.Row():
                     stt_timeline = gr.Textbox(label="Speaker Diarization / Dialogue Timeline", lines=6)
-                    stt_docx_file = gr.File(label="Download Formatted Word Document (.docx)")
+                    stt_docx_file = gr.File(label="Download Formatted Word Documents (.docx)", file_count="multiple")
                 stt_detected = gr.Textbox(label="Detected Language Code")
 
                 stt_button.click(

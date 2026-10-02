@@ -23,22 +23,21 @@ Features:
   * ``verbatim``: exact word-for-word transcript preserving filler words and numbers.
   * ``translit``: romanized transliteration into Latin/Roman script.
   * ``codemix``: code-mixed output (e.g. Hinglish) matching natural spoken style.
-- Automatic English Translation & Word (.docx) Generation:
-  * Translates the transcribed text into English (``en-IN``) using Sarvam Translation
-    (model ``sarvam-translate:v1`` or ``mayura:v1``).
-  * Automatically creates a Microsoft Word (``.docx``) document with the exact same
-    file stem as the input audio file in the output folder.
-  * Includes clean document layout: executive metadata table, English translation with
-    distinct colored speaker dialogue turns & timestamps, and the original native transcript.
+- Automatic Dual Word (.docx) Document Deliverables (Default):
+  * Generates 2 separate Microsoft Word (.docx) files per input audio file:
+    1. Original language transcript: ``<filename>_<Language>.docx``
+    2. English translation: ``<filename>_English.docx`` (when source is Indic)
+  * Clean, executive document design with no vendor watermarks or model attributions.
+  * Preserves speaker diarization turns, colored speaker tags, and timestamps.
+- Optional Extra Formats (disabled by default to prevent folder clutter):
+  * ``--export-txt``: plain text transcript with speaker timestamps (.txt)
+  * ``--export-csv``: chronological timeline spreadsheet (.csv)
+  * ``--export-json``: raw API response payload (.json)
+  * ``--all-formats``: export all formats (.docx, .txt, .csv, .json)
 - Speaker Diarization: identify who spoke when, either with automatic detection
   or constrained to a known number of speakers (1-20 speakers).
 - Domain Keyterms Biasing: provide up to 50 custom domain names, brand terms,
   or technical words to bias recognition in ``saaras:v4``.
-- Multi-format deliverables per audio recording:
-  1. Microsoft Word Document (``.docx``) with English translation and original transcript.
-  2. Formatted human-readable dialogue transcript with timestamps (``.txt``).
-  3. Chronological timeline spreadsheet (``.csv``).
-  4. Raw API response payload with English translation metadata (``.json``).
 - Reusable single-item worker: exposes ``transcribe_single_audio()`` for in-process
   import by web interfaces (e.g., Gradio in ``app.py``) or automated pipelines.
 """
@@ -442,26 +441,39 @@ def translate_to_english(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # DOCX Document Generation
 # ---------------------------------------------------------------------------
 
-def generate_translation_docx(
+def get_clean_language_name(code: str | None) -> str:
+    """
+    Return a clean, human-readable language name for filenames
+    (e.g., 'Odia', 'Hindi', 'Bengali', 'English').
+    """
+    if not code:
+        return "Original"
+    code_str = str(code).strip()
+    if code_str.lower() in ("auto", "unknown", "none", "auto-detected", ""):
+        return "Original"
+    raw_name = SUPPORTED_LANGUAGES.get(code_str, code_str)
+    # Extract name before any parentheses (e.g. "English (Indian/Global)" -> "English")
+    base = raw_name.split("(")[0].strip()
+    cleaned = re.sub(r"[^\w\-]", "", base)
+    return cleaned or "Original"
+
+
+def generate_transcript_docx(
     audio_path: Path,
-    result_json: dict,
-    translated_text: str,
-    source_lang: str,
     output_docx_path: Path,
-    asr_model: str = DEFAULT_MODEL,
-    translation_model: str = DEFAULT_TRANSLATE_MODEL,
+    title: str,
+    meta_rows: list[tuple[str, str]],
+    segments: list[dict[str, Any]] | None = None,
+    dialogue_lines: list[str] | None = None,
+    raw_text: str | None = None,
 ) -> Path:
     """
-    Generate a professional Microsoft Word (.docx) document containing:
-    1. Header & Document Title
-    2. Executive Metadata Summary Table
-    3. English Translated Transcript (with distinct styled speaker dialogue & timestamps)
-    4. Original Native Transcript (for reference)
-
-    Saved with the same input file name in the output directory.
+    Generate a clean, executive Microsoft Word (.docx) document.
+    Does not include vendor watermarks, model attributions, or unwanted metadata.
     """
     if not HAS_DOCX:
         raise RuntimeError(
@@ -481,61 +493,43 @@ def generate_translation_docx(
     # Document Title
     title_p = doc.add_paragraph()
     title_p.paragraph_format.space_before = Pt(0)
-    title_p.paragraph_format.space_after = Pt(2)
-    title_run = title_p.add_run("Audio Transcription & English Translation")
+    title_p.paragraph_format.space_after = Pt(4)
+    title_run = title_p.add_run(title)
     title_run.font.name = "Calibri"
-    title_run.font.size = Pt(22)
+    title_run.font.size = Pt(20)
     title_run.font.bold = True
     title_run.font.color.rgb = RGBColor(16, 44, 87)  # Deep Navy
 
-    # Subtitle
-    sub_p = doc.add_paragraph()
-    sub_p.paragraph_format.space_after = Pt(12)
-    sub_run = sub_p.add_run("Generated by Sarvam AI Speech-to-Text Suite")
-    sub_run.font.name = "Calibri"
-    sub_run.font.size = Pt(10)
-    sub_run.font.italic = True
-    sub_run.font.color.rgb = RGBColor(110, 110, 110)
-
     # Metadata Table
-    meta_rows = [
-        ("Source Audio File", audio_path.name),
-        ("Spoken Language", f"{SUPPORTED_LANGUAGES.get(source_lang, source_lang)} ({source_lang})"),
-        ("Target Language", "English (en-IN)"),
-        ("ASR Speech Model", asr_model),
-        ("Translation Model", translation_model),
-        ("Export Timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
-    ]
+    if meta_rows:
+        tbl = doc.add_table(rows=len(meta_rows), cols=2)
+        tbl.style = "Table Grid"
+        tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    tbl = doc.add_table(rows=len(meta_rows), cols=2)
-    tbl.style = "Table Grid"
-    tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for idx, (label, val) in enumerate(meta_rows):
+            row = tbl.rows[idx]
+            cell_lbl = row.cells[0]
+            cell_val = row.cells[1]
 
-    for idx, (label, val) in enumerate(meta_rows):
-        row = tbl.rows[idx]
-        cell_lbl = row.cells[0]
-        cell_val = row.cells[1]
+            p_lbl = cell_lbl.paragraphs[0]
+            p_lbl.paragraph_format.space_after = Pt(2)
+            r_lbl = p_lbl.add_run(label)
+            r_lbl.bold = True
+            r_lbl.font.size = Pt(9.5)
+            r_lbl.font.color.rgb = RGBColor(50, 50, 50)
 
-        p_lbl = cell_lbl.paragraphs[0]
-        p_lbl.paragraph_format.space_after = Pt(2)
-        r_lbl = p_lbl.add_run(label)
-        r_lbl.bold = True
-        r_lbl.font.size = Pt(9.5)
-        r_lbl.font.color.rgb = RGBColor(50, 50, 50)
+            p_val = cell_val.paragraphs[0]
+            p_val.paragraph_format.space_after = Pt(2)
+            r_val = p_val.add_run(val)
+            r_val.font.size = Pt(9.5)
 
-        p_val = cell_val.paragraphs[0]
-        p_val.paragraph_format.space_after = Pt(2)
-        r_val = p_val.add_run(val)
-        r_val.font.size = Pt(9.5)
+        doc.add_paragraph().paragraph_format.space_after = Pt(8)
 
-    doc.add_paragraph().paragraph_format.space_after = Pt(10)
+    # Heading for content
+    h = doc.add_heading("Transcript", level=1)
+    h.style.font.color.rgb = RGBColor(16, 44, 87)
+    doc.add_paragraph().paragraph_format.space_after = Pt(2)
 
-    # ---------------- Section 1: English Translation ----------------
-    h1 = doc.add_heading("English Translation", level=1)
-    h1.style.font.color.rgb = RGBColor(16, 44, 87)
-    doc.add_paragraph().paragraph_format.space_after = Pt(4)
-
-    # Palette of complementary speaker colors
     speaker_colors = [
         RGBColor(27, 85, 155),   # Navy Blue
         RGBColor(38, 128, 90),   # Forest Green
@@ -543,18 +537,19 @@ def generate_translation_docx(
         RGBColor(128, 40, 128),  # Plum Purple
         RGBColor(180, 40, 40),   # Crimson
     ]
+    speaker_color_map: dict[str, RGBColor] = {}
+    speaker_idx = 0
 
     turn_pattern = re.compile(
         r"^\[(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s*-\s*(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(?P<speaker>[^:]+):\s*(?P<text>.*)$"
     )
 
-    tr_lines = [l.strip() for l in translated_text.split("\n") if l.strip()]
-    speaker_color_map: dict[str, RGBColor] = {}
-    speaker_idx = 0
-
-    if tr_lines:
-        for line in tr_lines:
-            match = turn_pattern.match(line)
+    if dialogue_lines:
+        for line in dialogue_lines:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            match = turn_pattern.match(line_str)
             p = doc.add_paragraph()
             p.paragraph_format.space_after = Pt(6)
             p.paragraph_format.line_spacing = 1.15
@@ -577,24 +572,13 @@ def generate_translation_docx(
                 body_run = p.add_run(match.group("text").strip())
                 body_run.font.size = Pt(11)
             else:
-                body_run = p.add_run(line)
+                body_run = p.add_run(line_str)
                 body_run.font.size = Pt(11)
-    else:
-        p = doc.add_paragraph()
-        p.add_run("[No translation content generated]").italic = True
 
-    # ---------------- Section 2: Original Native Transcript ----------------
-    doc.add_paragraph().paragraph_format.space_after = Pt(14)
-    src_label = SUPPORTED_LANGUAGES.get(source_lang, source_lang)
-    h2 = doc.add_heading(f"Original Transcript ({src_label})", level=1)
-    h2.style.font.color.rgb = RGBColor(80, 80, 80)
-    doc.add_paragraph().paragraph_format.space_after = Pt(4)
-
-    segments = extract_segments(result_json)
-    if segments:
+    elif segments:
         for seg in segments:
             p = doc.add_paragraph()
-            p.paragraph_format.space_after = Pt(5)
+            p.paragraph_format.space_after = Pt(6)
             p.paragraph_format.line_spacing = 1.15
 
             spk = seg.get("speaker", "Speaker")
@@ -604,7 +588,7 @@ def generate_translation_docx(
 
             spk_run = p.add_run(f"{spk} ")
             spk_run.bold = True
-            spk_run.font.size = Pt(10)
+            spk_run.font.size = Pt(10.5)
             spk_run.font.color.rgb = speaker_color_map[spk]
 
             start_t = format_time(seg.get("start"))
@@ -614,17 +598,54 @@ def generate_translation_docx(
             ts_run.font.color.rgb = RGBColor(120, 120, 120)
 
             body_run = p.add_run(seg.get("text", ""))
-            body_run.font.size = Pt(10.5)
-    else:
-        orig_text = str(result_json.get("transcript", "")).strip()
-        p = doc.add_paragraph()
-        p.paragraph_format.line_spacing = 1.15
-        p.add_run(orig_text or "[No original transcript returned]")
+            body_run.font.size = Pt(11)
 
-    # Ensure parent output directory exists and save document
+    elif raw_text:
+        for para in raw_text.split("\n\n"):
+            para_str = para.strip()
+            if para_str:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(6)
+                p.paragraph_format.line_spacing = 1.15
+                p.add_run(para_str)
+    else:
+        p = doc.add_paragraph()
+        p.add_run("[No transcript content]").italic = True
+
     output_docx_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_docx_path))
     return output_docx_path
+
+
+def generate_translation_docx(
+    audio_path: Path,
+    result_json: dict,
+    translated_text: str,
+    source_lang: str,
+    output_docx_path: Path,
+    asr_model: str = DEFAULT_MODEL,
+    translation_model: str = DEFAULT_TRANSLATE_MODEL,
+) -> Path:
+    """
+    Backwards-compatible helper: writes an English translation docx.
+    """
+    clean_lang = get_clean_language_name(source_lang)
+    lang_display = SUPPORTED_LANGUAGES.get(source_lang, source_lang)
+    meta_rows = [
+        ("Source Audio File", audio_path.name),
+        ("Original Language", f"{lang_display} ({source_lang})" if source_lang != clean_lang else lang_display),
+        ("Translated Language", "English (en-IN)"),
+        ("Export Date", time.strftime("%Y-%m-%d %H:%M:%S")),
+    ]
+    tr_lines = [l.strip() for l in translated_text.split("\n") if l.strip()]
+    return generate_transcript_docx(
+        audio_path=audio_path,
+        output_docx_path=output_docx_path,
+        title="Audio Transcript (English Translation)",
+        meta_rows=meta_rows,
+        dialogue_lines=tr_lines if tr_lines else None,
+        raw_text=translated_text if not tr_lines else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -640,64 +661,83 @@ def write_outputs(
     client: SarvamAI | None = None,
     auto_translate: bool = True,
     translation_model: str = DEFAULT_TRANSLATE_MODEL,
-) -> tuple[Path, Path, Path, Path | None]:
+    export_txt: bool = False,
+    export_csv: bool = False,
+    export_json: bool = False,
+) -> dict[str, Path]:
     """
     Write deliverables for a transcribed audio recording:
-    1. Human-readable dialogue transcript with timestamps (.txt)
-    2. Chronological timeline spreadsheet (.csv)
-    3. Raw JSON response payload (.json)
-    4. Automatically translated Microsoft Word document (.docx)
+    Default deliverables (2 Word documents):
+      1. Original language transcript docx: <audio_stem>_<Language>.docx
+      2. English translation docx: <audio_stem>_English.docx
+    Optional deliverables (disabled by default):
+      3. Plain text transcript (.txt) via export_txt=True
+      4. Timeline spreadsheet (.csv) via export_csv=True
+      5. Raw JSON payload (.json) via export_json=True
     """
-    base = output_dir / audio_path.stem
-    txt_path = base.with_suffix(".txt")
-    json_path = base.with_suffix(".json")
-    csv_path = base.with_suffix(".csv")
-    docx_path = base.with_suffix(".docx")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = audio_path.stem
 
     segments = extract_segments(result_json)
     lang_detected = result_json.get("language_code") or "auto-detected"
+    clean_lang = get_clean_language_name(lang_detected)
+    lang_display = SUPPORTED_LANGUAGES.get(lang_detected, lang_detected)
 
-    # ---- 1. Human-readable transcript (.txt) ----
-    lines: list[str] = [
-        f"File     : {audio_path.name}",
-        f"Model    : {model}",
-        f"Mode     : {mode}",
-        f"Language : {lang_detected}",
-        "",
-        "TRANSCRIPT",
-        "=" * 80,
-        "",
-    ]
-
+    # Format dialogue turns
     dialogue_lines: list[str] = []
     if segments:
         for segment in segments:
             start = format_time(segment["start"])
             end = format_time(segment["end"])
             formatted_turn = f"[{start} - {end}] {segment['speaker']}: {segment['text']}"
-            lines.append(formatted_turn)
             dialogue_lines.append(formatted_turn)
     else:
         transcript = str(result_json.get("transcript", "")).strip()
-        lines.append(transcript or "[No transcript returned]")
         if transcript:
             dialogue_lines.append(transcript)
 
     raw_dialogue_text = "\n".join(dialogue_lines)
-    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    generated_files: dict[str, Path] = {}
 
-    # ---- 2. Automatic English Translation & Word (.docx) Export ----
+    # ---- 1. Original Language Word (.docx) Document ----
+    # Naming: original file name + language + .docx
+    if clean_lang.lower() == "english" or lang_detected == "en-IN":
+        orig_docx_name = f"{stem}_English.docx"
+    else:
+        orig_docx_name = f"{stem}_{clean_lang}.docx"
+
+    orig_docx_path = output_dir / orig_docx_name
+
+    if HAS_DOCX:
+        try:
+            generate_transcript_docx(
+                audio_path=audio_path,
+                output_docx_path=orig_docx_path,
+                title=f"Audio Transcript ({clean_lang})",
+                meta_rows=[
+                    ("Source Audio File", audio_path.name),
+                    ("Language", f"{lang_display} ({lang_detected})" if lang_detected not in ("auto-detected", "unknown", clean_lang) else lang_display),
+                    ("Export Date", time.strftime("%Y-%m-%d %H:%M:%S")),
+                ],
+                segments=segments if segments else None,
+                raw_text=raw_dialogue_text if not segments else None,
+            )
+            generated_files["original_docx"] = orig_docx_path
+        except Exception as docx_err:
+            print(f"  [!] Original DOCX generation error for {audio_path.name}: {docx_err}")
+
+    # ---- 2. English Translation Word (.docx) Document ----
+    # Naming: original file name + English + .docx
+    eng_docx_path = output_dir / f"{stem}_English.docx"
     translated_text = ""
-    saved_docx: Path | None = None
 
-    if auto_translate and client is not None and raw_dialogue_text:
-        # If ASR mode was already 'translate', Saaras already translated the speech to English
-        if mode == "translate" or lang_detected == "en-IN":
+    if auto_translate and (clean_lang.lower() != "english" and lang_detected != "en-IN"):
+        if mode == "translate":
             translated_text = raw_dialogue_text
-            src_lang_code = lang_detected
-        else:
+        elif client is not None and raw_dialogue_text:
             try:
-                translated_text, src_lang_code = translate_to_english(
+                translated_text, _ = translate_to_english(
                     client=client,
                     text=raw_dialogue_text,
                     source_language_code=lang_detected,
@@ -706,71 +746,95 @@ def write_outputs(
             except Exception as tr_err:
                 print(f"  [!] English translation error on {audio_path.name}: {tr_err}")
                 translated_text = raw_dialogue_text
-                src_lang_code = lang_detected
 
         if HAS_DOCX and translated_text:
             try:
-                saved_docx = generate_translation_docx(
+                tr_lines = [ln.strip() for ln in translated_text.split("\n") if ln.strip()]
+                generate_transcript_docx(
                     audio_path=audio_path,
-                    result_json=result_json,
-                    translated_text=translated_text,
-                    source_lang=src_lang_code,
-                    output_docx_path=docx_path,
-                    asr_model=model,
-                    translation_model=translation_model if mode != "translate" else "saaras-native-translate",
+                    output_docx_path=eng_docx_path,
+                    title="Audio Transcript (English Translation)",
+                    meta_rows=[
+                        ("Source Audio File", audio_path.name),
+                        ("Original Language", f"{lang_display} ({lang_detected})" if lang_detected not in ("auto-detected", "unknown", clean_lang) else lang_display),
+                        ("Translated Language", "English (en-IN)"),
+                        ("Export Date", time.strftime("%Y-%m-%d %H:%M:%S")),
+                    ],
+                    dialogue_lines=tr_lines if segments else None,
+                    raw_text=translated_text if not segments else None,
                 )
+                generated_files["english_docx"] = eng_docx_path
             except Exception as docx_err:
-                print(f"  [!] DOCX generation error for {audio_path.name}: {docx_err}")
+                print(f"  [!] English DOCX generation error for {audio_path.name}: {docx_err}")
 
-    # ---- 3. Spreadsheet Timeline (.csv) ----
-    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "speaker",
-                "start_time_seconds",
-                "end_time_seconds",
-                "start_time",
-                "end_time",
-                "transcript",
-            ]
-        )
+    # ---- 3. Optional Plain Text (.txt) ----
+    if export_txt:
+        txt_path = output_dir / f"{stem}.txt"
+        lines: list[str] = [
+            f"File     : {audio_path.name}",
+            f"Language : {lang_detected}",
+            "",
+            "TRANSCRIPT",
+            "=" * 80,
+            "",
+        ]
+        lines.extend(dialogue_lines or [str(result_json.get("transcript", ""))])
+        txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        generated_files["txt"] = txt_path
 
-        for segment in segments:
+    # ---- 4. Optional Spreadsheet Timeline (.csv) ----
+    if export_csv:
+        csv_path = output_dir / f"{stem}.csv"
+        with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
             writer.writerow(
                 [
-                    segment["speaker"],
-                    segment["start"],
-                    segment["end"],
-                    format_time(segment["start"]),
-                    format_time(segment["end"]),
-                    segment["text"],
+                    "speaker",
+                    "start_time_seconds",
+                    "end_time_seconds",
+                    "start_time",
+                    "end_time",
+                    "transcript",
                 ]
             )
+            for segment in segments:
+                writer.writerow(
+                    [
+                        segment["speaker"],
+                        segment["start"],
+                        segment["end"],
+                        format_time(segment["start"]),
+                        format_time(segment["end"]),
+                        segment["text"],
+                    ]
+                )
+        generated_files["csv"] = csv_path
 
-    # ---- 4. Raw JSON (.json) enriched with translation metadata ----
-    if "model" not in result_json:
-        result_json["model"] = model
-    if "mode" not in result_json:
-        result_json["mode"] = mode
-    if translated_text:
-        result_json["english_translation"] = translated_text
-    if saved_docx:
-        result_json["docx_file"] = saved_docx.name
+    # ---- 5. Optional Raw JSON (.json) ----
+    if export_json:
+        json_path = output_dir / f"{stem}.json"
+        if translated_text:
+            result_json["english_translation"] = translated_text
+        json_path.write_text(
+            json.dumps(result_json, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        generated_files["json"] = json_path
 
-    json_path.write_text(
-        json.dumps(result_json, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
+    # Console status summary
     print(f"  ✓ {audio_path.name}")
-    print(f"    TXT  : {txt_path}")
-    print(f"    CSV  : {csv_path}")
-    print(f"    JSON : {json_path}")
-    if saved_docx:
-        print(f"    DOCX : {saved_docx}")
+    if "original_docx" in generated_files:
+        print(f"    DOCX ({clean_lang}) : {generated_files['original_docx']}")
+    if "english_docx" in generated_files:
+        print(f"    DOCX (English) : {generated_files['english_docx']}")
+    if "txt" in generated_files:
+        print(f"    TXT            : {generated_files['txt']}")
+    if "csv" in generated_files:
+        print(f"    CSV            : {generated_files['csv']}")
+    if "json" in generated_files:
+        print(f"    JSON           : {generated_files['json']}")
 
-    return txt_path, csv_path, json_path, saved_docx
+    return generated_files
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +854,9 @@ def transcribe_single_audio(
     auto_translate: bool = True,
     translation_model: str = DEFAULT_TRANSLATE_MODEL,
     output_dir: Path | None = None,
+    export_txt: bool = False,
+    export_csv: bool = False,
+    export_json: bool = False,
 ) -> dict[str, Any]:
     """
     Transcribe a single audio file with Sarvam AI.
@@ -886,6 +953,9 @@ def transcribe_single_audio(
             client=client,
             auto_translate=auto_translate,
             translation_model=translation_model,
+            export_txt=export_txt,
+            export_csv=export_csv,
+            export_json=export_json,
         )
     elif auto_translate:
         # Perform in-memory translation for callers like the Gradio web UI
@@ -992,6 +1062,9 @@ def process_batch(
     keyterms: list[str] | None,
     auto_translate: bool = True,
     translation_model: str = DEFAULT_TRANSLATE_MODEL,
+    export_txt: bool = False,
+    export_csv: bool = False,
+    export_json: bool = False,
 ) -> tuple[int, int]:
     """
     Upload and process a batch of audio files using Sarvam's bulk job API.
@@ -1077,6 +1150,9 @@ def process_batch(
                     client=client,
                     auto_translate=auto_translate,
                     translation_model=translation_model,
+                    export_txt=export_txt,
+                    export_csv=export_csv,
+                    export_json=export_json,
                 )
                 successful += 1
 
@@ -1250,6 +1326,30 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--export-txt",
+        action="store_true",
+        help="Also export formatted text transcript (.txt).",
+    )
+
+    parser.add_argument(
+        "--export-csv",
+        action="store_true",
+        help="Also export chronological timeline spreadsheet (.csv).",
+    )
+
+    parser.add_argument(
+        "--export-json",
+        action="store_true",
+        help="Also export raw JSON response payload (.json).",
+    )
+
+    parser.add_argument(
+        "--all-formats",
+        action="store_true",
+        help="Export all formats (.docx, .txt, .csv, .json).",
+    )
+
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=BATCH_SIZE,
@@ -1325,6 +1425,9 @@ def main() -> int:
 
     with_diarization = not args.no_diarization
     translate_to_english = not args.no_translate
+    export_txt = args.export_txt or args.all_formats
+    export_csv = args.export_csv or args.all_formats
+    export_json = args.export_json or args.all_formats
 
     print("=======================================================")
     print(" Sarvam AI Speech-to-Text Transcription & Translation")
@@ -1337,9 +1440,18 @@ def main() -> int:
         print(f" Speakers     : {spk_label}")
     if keyterm_list:
         print(f" Keyterms     : {len(keyterm_list)} term(s) loaded")
-    print(f" Translation  : {'English (en-IN) + .docx export' if translate_to_english else 'disabled'}")
+    print(" Output DOCX  : 2 files (<name>_<Lang>.docx & <name>_English.docx)")
     if translate_to_english:
         print(f" Trans. Model : {args.translation_model}")
+    extra_fmts = []
+    if export_txt:
+        extra_fmts.append("TXT")
+    if export_csv:
+        extra_fmts.append("CSV")
+    if export_json:
+        extra_fmts.append("JSON")
+    if extra_fmts:
+        print(f" Extra Output : {', '.join(extra_fmts)}")
     print(f" Files Found  : {len(audio_files)}")
     print(f" Output Dir   : {output_dir}")
     print("=======================================================")
@@ -1368,6 +1480,9 @@ def main() -> int:
             keyterms=keyterm_list,
             auto_translate=translate_to_english,
             translation_model=args.translation_model,
+            export_txt=export_txt,
+            export_csv=export_csv,
+            export_json=export_json,
         )
 
         total_successful += successful
