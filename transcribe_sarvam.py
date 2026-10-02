@@ -48,11 +48,15 @@ import json
 import os
 import random
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+
+import requests
 
 # Optional python-dotenv for API key resolution
 try:
@@ -110,6 +114,37 @@ DEFAULT_MODE = "transcribe"
 
 TRANSLATE_MODELS = ("sarvam-translate:v1", "mayura:v1")
 DEFAULT_TRANSLATE_MODEL = "sarvam-translate:v1"
+
+TRANSLATORS = ("google_free", "gemini")
+DEFAULT_TRANSLATOR = "google_free"
+
+# Mapping from Sarvam Indic BCP-47 codes to Google Translate ISO codes
+SARVAM_TO_GOOGLE_LANG = {
+    "hi-IN": "hi",
+    "bn-IN": "bn",
+    "kn-IN": "kn",
+    "ml-IN": "ml",
+    "mr-IN": "mr",
+    "od-IN": "or",  # Google Translate uses 'or' for Odia / Oriya
+    "pa-IN": "pa",
+    "ta-IN": "ta",
+    "te-IN": "te",
+    "gu-IN": "gu",
+    "as-IN": "as",
+    "ur-IN": "ur",
+    "ne-IN": "ne",
+    "kok-IN": "kok",
+    "ks-IN": "ks",
+    "sd-IN": "sd",
+    "sa-IN": "sa",
+    "sat-IN": "sat",
+    "mni-IN": "mni-Mtei",
+    "brx-IN": "brx",
+    "mai-IN": "mai",
+    "doi-IN": "doi",
+    "en-IN": "en",
+    "unknown": "auto",
+}
 
 # Supported language codes in Sarvam STT APIs (22 scheduled Indic languages + English + unknown)
 SUPPORTED_LANGUAGES = {
@@ -320,7 +355,145 @@ def extract_segments(data: dict) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# English Translation Helpers
+# Audio Optimization & Silence Removal (Cost Reduction)
+# ---------------------------------------------------------------------------
+
+def get_ffmpeg_binary() -> str | None:
+    """
+    Locate a usable ffmpeg executable, checking system PATH first,
+    then falling back to the bundled imageio-ffmpeg binary.
+    """
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def get_audio_duration_seconds(audio_path: Path, ffmpeg_bin: str | None = None) -> float | None:
+    """
+    Inspect the duration of an audio file in seconds via ffmpeg stderr metadata.
+    """
+    if ffmpeg_bin is None:
+        ffmpeg_bin = get_ffmpeg_binary()
+    if not ffmpeg_bin or not audio_path.exists():
+        return None
+
+    try:
+        cmd = [ffmpeg_bin, "-i", str(audio_path)]
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
+        if match:
+            h, m, s = match.groups()
+            return int(h) * 3600 + int(m) * 60 + float(s)
+    except Exception:
+        pass
+    return None
+
+
+def optimize_audio_for_transcription(
+    input_path: Path,
+    output_path: Path,
+    test_clip_seconds: float | None = None,
+    remove_silence: bool = False,
+    normalize_sample_rate: bool = True,
+    silence_threshold_db: float = -35.0,
+    silence_min_duration: float = 0.4,
+    ffmpeg_bin: str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """
+    Preprocess and optimize an audio recording before uploading to Sarvam AI STT:
+    1. Test Clipping: trims to the first `test_clip_seconds` (e.g. 60s or 120s) to keep
+       API testing costs minimal.
+    2. Silence Removal: removes silent intervals and dead pauses (below -35dB for >0.4s)
+       to significantly reduce the billable duration.
+    3. Normalization: resamples to 16kHz mono 16-bit WAV (standard optimal ASR format).
+
+    Returns:
+        (processed_audio_path, stats_dict)
+    """
+    if ffmpeg_bin is None:
+        ffmpeg_bin = get_ffmpeg_binary()
+
+    needs_optimization = bool(
+        (test_clip_seconds and test_clip_seconds > 0)
+        or remove_silence
+        or normalize_sample_rate
+    )
+
+    if not needs_optimization or not ffmpeg_bin:
+        return input_path, {"optimized": False}
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    orig_duration = get_audio_duration_seconds(input_path, ffmpeg_bin)
+
+    cmd = [ffmpeg_bin, "-y"]
+    # If test clipping is requested, apply -t before -i so ffmpeg only decodes the first N seconds
+    if test_clip_seconds and test_clip_seconds > 0:
+        cmd.extend(["-t", str(test_clip_seconds)])
+
+    cmd.extend(["-i", str(input_path)])
+
+    filters: list[str] = []
+    if remove_silence:
+        filters.append(
+            f"silenceremove=start_periods=1:start_duration={silence_min_duration}:start_threshold={silence_threshold_db}dB:"
+            f"stop_periods=-1:stop_duration={silence_min_duration}:stop_threshold={silence_threshold_db}dB"
+        )
+    if normalize_sample_rate:
+        filters.append("aresample=16000,aformat=channel_layouts=mono")
+
+    if filters:
+        cmd.extend(["-af", ",".join(filters)])
+    else:
+        cmd.extend(["-ar", "16000", "-ac", "1"])
+
+    cmd.extend(["-c:a", "pcm_s16le", str(output_path)])
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0 or not output_path.exists():
+            print(f"  [!] Audio preprocessing warning: ffmpeg returned code {proc.returncode}")
+            return input_path, {"optimized": False, "error": proc.stderr}
+
+        proc_duration = get_audio_duration_seconds(output_path, ffmpeg_bin)
+        stats: dict[str, Any] = {
+            "optimized": True,
+            "original_path": input_path,
+            "processed_path": output_path,
+            "original_duration": orig_duration,
+            "processed_duration": proc_duration,
+        }
+
+        if orig_duration and proc_duration:
+            saved = max(0.0, orig_duration - proc_duration)
+            stats["duration_saved"] = saved
+            stats["savings_pct"] = (saved / orig_duration) * 100
+
+        return output_path, stats
+
+    except Exception as exc:
+        print(f"  [!] Audio optimization failed ({exc}); using original audio.")
+        return input_path, {"optimized": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# English Translation Helpers (Zero Sarvam API Cost)
 # ---------------------------------------------------------------------------
 
 def chunk_dialogue_lines(lines: list[str], max_chars: int = 1800) -> list[str]:
@@ -348,38 +521,135 @@ def chunk_dialogue_lines(lines: list[str], max_chars: int = 1800) -> list[str]:
     return chunks
 
 
-def translate_to_english(
-    client: SarvamAI,
+def translate_chunk_google_free(
     text: str,
     source_language_code: str | None = None,
-    model: str = DEFAULT_TRANSLATE_MODEL,
-    max_retries: int = 5,
-    initial_backoff: float = 3.0,
+    target_language: str = "en",
+    timeout: float = 15.0,
+) -> str:
+    """
+    Translate text using Google Free Translation GTX endpoint.
+    Fast, reliable, zero-cost, no API key required.
+    Preserves speaker turns and timestamp prefixes.
+    """
+    text = text.strip()
+    if not text:
+        return ""
+
+    src = "auto"
+    if source_language_code:
+        src = SARVAM_TO_GOOGLE_LANG.get(
+            source_language_code,
+            source_language_code.split("-")[0].lower()
+        )
+        if src in ("unknown", "auto-detected", "none", ""):
+            src = "auto"
+
+    url = "https://translate.googleapis.com/translate_a/single"
+    params = {
+        "client": "gtx",
+        "sl": src,
+        "tl": target_language,
+        "dt": "t",
+        "q": text,
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        pieces: list[str] = []
+        if data and isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+            for piece in data[0]:
+                if piece and len(piece) > 0 and piece[0]:
+                    pieces.append(piece[0])
+        return "".join(pieces)
+    except Exception as exc:
+        # Fallback to deep-translator if installed
+        try:
+            from deep_translator import GoogleTranslator
+            return GoogleTranslator(source=src, target=target_language).translate(text)
+        except Exception:
+            raise exc
+
+
+def translate_chunk_gemini(
+    text: str,
+    gemini_api_key: str,
+    source_language: str = "Indic",
+    target_language: str = "English",
+    model: str = "gemini-2.5-flash",
+    timeout: float = 30.0,
+) -> str:
+    """
+    Translate transcript using Google Gemini API.
+    Used when a Gemini API key is provided for high-fidelity LLM conversational translation.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_api_key}"
+    prompt = (
+        f"You are a professional audio transcript translator. Translate the following {source_language} speech transcript "
+        f"into natural, fluent {target_language}.\n\n"
+        f"CRITICAL RULES:\n"
+        f"1. Preserve all speaker labels, timestamps, and line breaks exactly as given (e.g. '[00:00:01.000 - 00:00:04.500] Speaker 1: ...').\n"
+        f"2. Translate only the spoken dialogue itself into natural English.\n"
+        f"3. Return ONLY the translated transcript without extra commentary or explanation.\n\n"
+        f"Transcript:\n{text}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2},
+    }
+    resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    candidates = data.get("candidates") or []
+    if candidates:
+        content = candidates[0].get("content") or {}
+        parts = content.get("parts") or []
+        if parts:
+            return parts[0].get("text", "").strip()
+    return text
+
+
+def translate_to_english(
+    text: str,
+    source_language_code: str | None = None,
+    client: SarvamAI | None = None,
+    translator: str = DEFAULT_TRANSLATOR,
+    gemini_api_key: str | None = None,
+    model: str | None = None,
+    max_retries: int = 3,
+    initial_backoff: float = 2.0,
 ) -> tuple[str, str]:
     """
-    Translate text into English (en-IN) using Sarvam AI Translation API.
-    Handles text chunking to respect model character limits and retries on 429.
+    Translate transcript into English (en-IN) using a free translation engine
+    or Google Gemini. Does NOT use Sarvam API for translation, keeping translation costs at zero.
 
-    Returns: (translated_text, source_language_code_used)
+    Parameters:
+        text: Raw transcript or diarized timeline text.
+        source_language_code: BCP-47 language code (e.g. 'hi-IN', 'od-IN').
+        client: Optional SarvamAI client (retained for backward compatibility, not used for translation).
+        translator: Translation engine ('google_free' or 'gemini'). Default is 'google_free'.
+        gemini_api_key: Optional Gemini API key if using translator='gemini'.
+        model: Deprecated parameter retained for backward compatibility.
+
+    Returns:
+        (translated_text, source_language_code_used)
     """
     text = text.strip()
     if not text:
         return "", source_language_code or "en-IN"
 
-    # Resolve source language
-    src_lang = source_language_code
-    if not src_lang or src_lang.lower() in ("auto", "unknown", "none"):
-        # Attempt to identify the language using Sarvam language identification
-        try:
-            sample = text[:500]
-            ident = client.text.identify_language(input=sample)
-            src_lang = getattr(ident, "language_code", None) or "hi-IN"
-        except Exception:
-            src_lang = None
-
-    # If already English, return directly
-    if src_lang == "en-IN":
+    src_lang = source_language_code or "unknown"
+    if src_lang.lower() in ("en-IN", "english", "en"):
         return text, "en-IN"
+
+    # Resolve Gemini key from environment or .env if not passed directly
+    if translator == "gemini" and not gemini_api_key:
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip() or None
 
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
     if not lines:
@@ -389,55 +659,40 @@ def translate_to_english(
     translated_parts: list[str] = []
 
     for index, chunk in enumerate(chunks, start=1):
+        translated_chunk = None
         for attempt in range(max_retries):
             try:
-                kwargs: dict[str, Any] = {
-                    "input": chunk,
-                    "target_language_code": "en-IN",
-                }
-                if src_lang:
-                    kwargs["source_language_code"] = src_lang
-                    kwargs["model"] = model
+                if translator == "gemini" and gemini_api_key:
+                    translated_chunk = translate_chunk_gemini(
+                        text=chunk,
+                        gemini_api_key=gemini_api_key,
+                        source_language=SUPPORTED_LANGUAGES.get(src_lang, src_lang),
+                    )
                 else:
-                    kwargs["source_language_code"] = "auto"
-                    kwargs["model"] = "mayura:v1"
-
-                res = client.text.translate(**kwargs)
-                tr_text = getattr(res, "translated_text", None)
-                if tr_text is None and isinstance(res, dict):
-                    tr_text = res.get("translated_text")
-                translated_parts.append(str(tr_text or chunk))
+                    translated_chunk = translate_chunk_google_free(
+                        text=chunk,
+                        source_language_code=src_lang,
+                    )
                 break
             except Exception as exc:
-                err_str = str(exc)
-                is_rate_limit = "429" in err_str or "rate limit" in err_str.lower()
-                if is_rate_limit and attempt < max_retries - 1:
-                    wait_time = initial_backoff * (2 ** attempt) + random.uniform(0.5, 2.0)
+                if attempt < max_retries - 1:
+                    wait_time = initial_backoff * (2 ** attempt) + random.uniform(0.5, 1.5)
                     time.sleep(wait_time)
                     continue
-
-                # If sarvam-translate failed due to language code, try mayura auto
-                if "Invalid language code" in err_str and kwargs.get("model") != "mayura:v1":
+                print(f"    [!] Translation warning on chunk {index} ({translator}): {exc}")
+                # Fallback to Google Free if Gemini failed, or preserve chunk
+                if translator == "gemini":
                     try:
-                        res = client.text.translate(
-                            input=chunk,
-                            source_language_code="auto",
-                            target_language_code="en-IN",
-                            model="mayura:v1",
-                        )
-                        tr_text = getattr(res, "translated_text", None) or ""
-                        translated_parts.append(str(tr_text))
-                        src_lang = getattr(res, "source_language_code", None) or "auto"
+                        translated_chunk = translate_chunk_google_free(chunk, src_lang)
                         break
                     except Exception:
                         pass
+                translated_chunk = chunk
 
-                print(f"    [!] Translation warning on chunk {index}: {exc}")
-                translated_parts.append(chunk)  # preserve original text on failure
-                break
+        translated_parts.append(translated_chunk if translated_chunk is not None else chunk)
 
     full_translated = "\n".join(translated_parts)
-    return full_translated, src_lang or "unknown"
+    return full_translated, src_lang
 
 
 # ---------------------------------------------------------------------------
@@ -660,10 +915,12 @@ def write_outputs(
     mode: str = DEFAULT_MODE,
     client: SarvamAI | None = None,
     auto_translate: bool = True,
-    translation_model: str = DEFAULT_TRANSLATE_MODEL,
+    translator: str = DEFAULT_TRANSLATOR,
+    gemini_api_key: str | None = None,
     export_txt: bool = False,
     export_csv: bool = False,
     export_json: bool = False,
+    translation_model: str = DEFAULT_TRANSLATE_MODEL,
 ) -> dict[str, Path]:
     """
     Write deliverables for a transcribed audio recording:
@@ -735,13 +992,13 @@ def write_outputs(
     if auto_translate and (clean_lang.lower() != "english" and lang_detected != "en-IN"):
         if mode == "translate":
             translated_text = raw_dialogue_text
-        elif client is not None and raw_dialogue_text:
+        elif raw_dialogue_text:
             try:
                 translated_text, _ = translate_to_english(
-                    client=client,
                     text=raw_dialogue_text,
                     source_language_code=lang_detected,
-                    model=translation_model,
+                    translator=translator,
+                    gemini_api_key=gemini_api_key,
                 )
             except Exception as tr_err:
                 print(f"  [!] English translation error on {audio_path.name}: {tr_err}")
@@ -852,11 +1109,16 @@ def transcribe_single_audio(
     keyterms: list[str] | None = None,
     with_timestamps: bool = True,
     auto_translate: bool = True,
-    translation_model: str = DEFAULT_TRANSLATE_MODEL,
+    translator: str = DEFAULT_TRANSLATOR,
+    gemini_api_key: str | None = None,
+    test_clip_seconds: float | None = None,
+    remove_silence: bool = False,
+    preprocess: bool = False,
     output_dir: Path | None = None,
     export_txt: bool = False,
     export_csv: bool = False,
     export_json: bool = False,
+    translation_model: str = DEFAULT_TRANSLATE_MODEL,
 ) -> dict[str, Any]:
     """
     Transcribe a single audio file with Sarvam AI.
@@ -865,123 +1127,155 @@ def transcribe_single_audio(
     REST endpoint for immediate low-latency results.
     If diarization is requested, submits a dedicated batch job to obtain
     speaker-separated dialogue turns.
-    Optionally translates the transcript into English and generates a .docx file.
+    Optionally pre-processes input audio (silence removal, test clipping) to minimize costs.
+    Optionally translates the transcript into English using zero-cost free translation.
 
     Returns the parsed result dictionary enriched with English translation.
     """
-    audio_path = Path(audio_path).resolve()
-    if not audio_path.is_file():
-        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    orig_audio_path = Path(audio_path).resolve()
+    if not orig_audio_path.is_file():
+        raise FileNotFoundError(f"Audio file not found: {orig_audio_path}")
 
-    # Normalize language code: 'auto' is mapped to None or 'unknown'
-    norm_lang = None
-    if language_code and language_code.lower() not in ("auto", "none", ""):
-        norm_lang = language_code
+    # Audio optimization (clipping and/or silence removal)
+    upload_audio_path = orig_audio_path
+    temp_dir_obj = None
 
-    # Clean keyterms: max 50 terms, stripped
-    clean_keyterms: list[str] | None = None
-    if keyterms:
-        clean_keyterms = [k.strip() for k in keyterms if k.strip()][:50]
-        if not clean_keyterms:
-            clean_keyterms = None
-
-    result_json: dict[str, Any] = {}
-
-    # Path A: Fast REST API when diarization is not requested
-    if not with_diarization:
-        with open(audio_path, "rb") as fh:
-            kwargs: dict[str, Any] = {
-                "file": (audio_path.name, fh),
-                "model": model,
-                "mode": mode,
-                "with_timestamps": with_timestamps,
-            }
-            if norm_lang:
-                kwargs["language_code"] = norm_lang
-            if clean_keyterms and model == "saaras:v4":
-                kwargs["keyterms"] = clean_keyterms
-
-            response = client.speech_to_text.transcribe(**kwargs)
-            result_json = to_dict(response)
-
-    # Path B: Batch API with Speaker Diarization
-    else:
-        with tempfile.TemporaryDirectory(prefix="sarvam_stt_single_") as tmp:
-            tmp_dir = Path(tmp)
-
-            job_kwargs: dict[str, Any] = {
-                "model": model,
-                "mode": mode,
-                "with_diarization": True,
-                "with_timestamps": with_timestamps,
-            }
-            if norm_lang:
-                job_kwargs["language_code"] = norm_lang
-            if num_speakers is not None:
-                job_kwargs["num_speakers"] = num_speakers
-            if clean_keyterms and model == "saaras:v4":
-                job_kwargs["keyterms"] = clean_keyterms
-
-            job = client.speech_to_text_job.create_job(**job_kwargs)
-            job.upload_files(file_paths=[str(audio_path)])
-            job.start()
-            job.wait_until_complete()
-
-            file_results = job.get_file_results()
-            successful_entries = file_results.get("successful") or []
-            failed_entries = file_results.get("failed") or []
-
-            if failed_entries and not successful_entries:
-                err_msg = failed_entries[0].get("error_message") or failed_entries[0].get("error") or "Job failed"
-                raise RuntimeError(f"Transcription failed: {err_msg}")
-
-            job.download_outputs(output_dir=str(tmp_dir))
-            json_candidates = sorted(tmp_dir.glob("*.json"))
-            if not json_candidates:
-                raise RuntimeError(f"Could not locate output JSON for {audio_path.name}")
-
-            result_json = json.loads(json_candidates[0].read_text(encoding="utf-8"))
-
-    # Write deliverables to output directory if specified
-    if output_dir:
-        write_outputs(
-            audio_path=audio_path,
-            result_json=result_json,
-            output_dir=output_dir,
-            model=model,
-            mode=mode,
-            client=client,
-            auto_translate=auto_translate,
-            translation_model=translation_model,
-            export_txt=export_txt,
-            export_csv=export_csv,
-            export_json=export_json,
+    if (test_clip_seconds and test_clip_seconds > 0) or remove_silence or preprocess:
+        temp_dir_obj = tempfile.TemporaryDirectory(prefix="sarvam_stt_opt_")
+        target_opt = Path(temp_dir_obj.name) / f"{orig_audio_path.stem}_opt.wav"
+        proc_p, stats = optimize_audio_for_transcription(
+            input_path=orig_audio_path,
+            output_path=target_opt,
+            test_clip_seconds=test_clip_seconds,
+            remove_silence=remove_silence,
+            normalize_sample_rate=True,
         )
-    elif auto_translate:
-        # Perform in-memory translation for callers like the Gradio web UI
-        segments = extract_segments(result_json)
-        if segments:
-            lines = [f"[{format_time(s['start'])} - {format_time(s['end'])}] {s['speaker']}: {s['text']}" for s in segments]
-            raw_text = "\n".join(lines)
+        upload_audio_path = proc_p
+        if stats.get("optimized") and stats.get("original_duration"):
+            orig_d = stats.get("original_duration", 0)
+            proc_d = stats.get("processed_duration", 0)
+            saved_s = stats.get("duration_saved", 0)
+            saved_pct = stats.get("savings_pct", 0)
+            print(f"  [Cost Optimization] {orig_audio_path.name}: {orig_d:.1f}s -> {proc_d:.1f}s (Saved {saved_s:.1f}s / {saved_pct:.1f}%)")
+
+    try:
+        # Normalize language code: 'auto' is mapped to None or 'unknown'
+        norm_lang = None
+        if language_code and language_code.lower() not in ("auto", "none", ""):
+            norm_lang = language_code
+
+        # Clean keyterms: max 50 terms, stripped
+        clean_keyterms: list[str] | None = None
+        if keyterms:
+            clean_keyterms = [k.strip() for k in keyterms if k.strip()][:50]
+            if not clean_keyterms:
+                clean_keyterms = None
+
+        result_json: dict[str, Any] = {}
+
+        # Path A: Fast REST API when diarization is not requested
+        if not with_diarization:
+            with open(upload_audio_path, "rb") as fh:
+                kwargs: dict[str, Any] = {
+                    "file": (orig_audio_path.name, fh),
+                    "model": model,
+                    "mode": mode,
+                    "with_timestamps": with_timestamps,
+                }
+                if norm_lang:
+                    kwargs["language_code"] = norm_lang
+                if clean_keyterms and model == "saaras:v4":
+                    kwargs["keyterms"] = clean_keyterms
+
+                response = client.speech_to_text.transcribe(**kwargs)
+                result_json = to_dict(response)
+
+        # Path B: Batch API with Speaker Diarization
         else:
-            raw_text = str(result_json.get("transcript", "")).strip()
+            with tempfile.TemporaryDirectory(prefix="sarvam_stt_single_") as tmp:
+                tmp_dir = Path(tmp)
 
-        if raw_text:
-            if mode == "translate" or result_json.get("language_code") == "en-IN":
-                result_json["english_translation"] = raw_text
+                job_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "mode": mode,
+                    "with_diarization": True,
+                    "with_timestamps": with_timestamps,
+                }
+                if norm_lang:
+                    job_kwargs["language_code"] = norm_lang
+                if num_speakers is not None:
+                    job_kwargs["num_speakers"] = num_speakers
+                if clean_keyterms and model == "saaras:v4":
+                    job_kwargs["keyterms"] = clean_keyterms
+
+                job = client.speech_to_text_job.create_job(**job_kwargs)
+                job.upload_files(file_paths=[str(upload_audio_path)])
+                job.start()
+                job.wait_until_complete()
+
+                file_results = job.get_file_results()
+                successful_entries = file_results.get("successful") or []
+                failed_entries = file_results.get("failed") or []
+
+                if failed_entries and not successful_entries:
+                    err_msg = failed_entries[0].get("error_message") or failed_entries[0].get("error") or "Job failed"
+                    raise RuntimeError(f"Transcription failed: {err_msg}")
+
+                job.download_outputs(output_dir=str(tmp_dir))
+                json_candidates = sorted(tmp_dir.glob("*.json"))
+                if not json_candidates:
+                    raise RuntimeError(f"Could not locate output JSON for {orig_audio_path.name}")
+
+                result_json = json.loads(json_candidates[0].read_text(encoding="utf-8"))
+
+        # Write deliverables to output directory if specified
+        if output_dir:
+            write_outputs(
+                audio_path=orig_audio_path,
+                result_json=result_json,
+                output_dir=output_dir,
+                model=model,
+                mode=mode,
+                client=client,
+                auto_translate=auto_translate,
+                translator=translator,
+                gemini_api_key=gemini_api_key,
+                export_txt=export_txt,
+                export_csv=export_csv,
+                export_json=export_json,
+            )
+        elif auto_translate:
+            # Perform in-memory translation for callers like the Gradio web UI
+            segments = extract_segments(result_json)
+            if segments:
+                lines = [f"[{format_time(s['start'])} - {format_time(s['end'])}] {s['speaker']}: {s['text']}" for s in segments]
+                raw_text = "\n".join(lines)
             else:
-                try:
-                    tr_text, _ = translate_to_english(
-                        client=client,
-                        text=raw_text,
-                        source_language_code=result_json.get("language_code"),
-                        model=translation_model,
-                    )
-                    result_json["english_translation"] = tr_text
-                except Exception:
-                    result_json["english_translation"] = raw_text
+                raw_text = str(result_json.get("transcript", "")).strip()
 
-    return result_json
+            if raw_text:
+                if mode == "translate" or result_json.get("language_code") == "en-IN":
+                    result_json["english_translation"] = raw_text
+                else:
+                    try:
+                        tr_text, _ = translate_to_english(
+                            text=raw_text,
+                            source_language_code=result_json.get("language_code"),
+                            translator=translator,
+                            gemini_api_key=gemini_api_key,
+                        )
+                        result_json["english_translation"] = tr_text
+                    except Exception:
+                        result_json["english_translation"] = raw_text
+
+        return result_json
+
+    finally:
+        if temp_dir_obj is not None:
+            try:
+                temp_dir_obj.cleanup()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1061,13 +1355,19 @@ def process_batch(
     num_speakers: int | None,
     keyterms: list[str] | None,
     auto_translate: bool = True,
-    translation_model: str = DEFAULT_TRANSLATE_MODEL,
+    translator: str = DEFAULT_TRANSLATOR,
+    gemini_api_key: str | None = None,
+    test_clip_seconds: float | None = None,
+    remove_silence: bool = False,
+    preprocess: bool = False,
     export_txt: bool = False,
     export_csv: bool = False,
     export_json: bool = False,
+    translation_model: str = DEFAULT_TRANSLATE_MODEL,
 ) -> tuple[int, int]:
     """
     Upload and process a batch of audio files using Sarvam's bulk job API.
+    Supports audio pre-processing (silence removal, test clipping) and zero-cost translation.
     Returns (successful_count, failed_count).
     """
     print(f"=== Batch {batch_number}: {len(batch)} file(s) ===")
@@ -1079,6 +1379,39 @@ def process_batch(
         tmp_dir = Path(tmp)
 
         try:
+            # Audio optimization if clipping or silence removal is requested
+            upload_files: list[Path] = []
+            upload_to_original: dict[str, Path] = {}
+
+            if (test_clip_seconds and test_clip_seconds > 0) or remove_silence or preprocess:
+                opt_dir = tmp_dir / "optimized_audio"
+                opt_dir.mkdir(parents=True, exist_ok=True)
+                for orig_p in batch:
+                    target_p = opt_dir / f"{orig_p.stem}_opt.wav"
+                    proc_p, stats = optimize_audio_for_transcription(
+                        input_path=orig_p,
+                        output_path=target_p,
+                        test_clip_seconds=test_clip_seconds,
+                        remove_silence=remove_silence,
+                        normalize_sample_rate=True,
+                    )
+                    upload_files.append(proc_p)
+                    upload_to_original[proc_p.name] = orig_p
+                    upload_to_original[proc_p.stem] = orig_p
+                    upload_to_original[orig_p.name] = orig_p
+                    upload_to_original[orig_p.stem] = orig_p
+                    if stats.get("optimized") and stats.get("original_duration"):
+                        orig_d = stats.get("original_duration", 0)
+                        proc_d = stats.get("processed_duration", 0)
+                        saved_s = stats.get("duration_saved", 0)
+                        saved_pct = stats.get("savings_pct", 0)
+                        print(f"  [Cost Optimization] {orig_p.name}: {orig_d:.1f}s -> {proc_d:.1f}s (Saved {saved_s:.1f}s / {saved_pct:.1f}%)")
+            else:
+                upload_files = batch
+                for orig_p in batch:
+                    upload_to_original[orig_p.name] = orig_p
+                    upload_to_original[orig_p.stem] = orig_p
+
             job_kwargs: dict[str, Any] = {
                 "model": model,
                 "mode": mode,
@@ -1096,7 +1429,7 @@ def process_batch(
                 job_kwargs["keyterms"] = keyterms[:50]
 
             job = client.speech_to_text_job.create_job(**job_kwargs)
-            job.upload_files(file_paths=[str(p) for p in batch])
+            job.upload_files(file_paths=[str(p) for p in upload_files])
 
             print(f"  Job created : {job.job_id}")
             print("  Starting job...")
@@ -1114,7 +1447,15 @@ def process_batch(
 
             # Map successful results to original audio files and write outputs
             for index, entry in enumerate(successful_entries):
-                audio_path = match_result_to_input(entry, batch, index)
+                matched_path = match_result_to_input(entry, upload_files, index)
+                if matched_path is not None:
+                    audio_path = upload_to_original.get(
+                        matched_path.name,
+                        upload_to_original.get(matched_path.stem, matched_path),
+                    )
+                else:
+                    audio_path = batch[index] if index < len(batch) else None
+
                 if audio_path is None:
                     print(
                         f"  ✗ Could not map result {entry.get('file_name', index)} to input file."
@@ -1149,7 +1490,8 @@ def process_batch(
                     mode=mode,
                     client=client,
                     auto_translate=auto_translate,
-                    translation_model=translation_model,
+                    translator=translator,
+                    gemini_api_key=gemini_api_key,
                     export_txt=export_txt,
                     export_csv=export_csv,
                     export_json=export_json,
@@ -1318,11 +1660,60 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--translator",
+        type=str,
+        choices=TRANSLATORS,
+        default=DEFAULT_TRANSLATOR,
+        help=(
+            f"Translation engine to translate transcripts to English: "
+            f"'google_free' (default; zero cost, no key required) or 'gemini' (requires API key)."
+        ),
+    )
+
+    parser.add_argument(
+        "--gemini-api-key",
+        type=str,
+        default=None,
+        help="Google Gemini API key (or set GEMINI_API_KEY environment variable) when using --translator gemini.",
+    )
+
+    parser.add_argument(
+        "--test-clip",
+        "--sample-duration",
+        dest="test_clip",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Clip audio to the first N seconds (e.g. 60 or 120) before processing, "
+            "allowing low-cost testing without uploading large files."
+        ),
+    )
+
+    parser.add_argument(
+        "--remove-silence",
+        action="store_true",
+        help=(
+            "Pre-process input audio to strip silent pauses (below -35dB for >0.4s), "
+            "reducing billable audio duration and transcription costs."
+        ),
+    )
+
+    parser.add_argument(
+        "--preprocess",
+        action="store_true",
+        help=(
+            "Pre-process input audio by normalizing to standard 16kHz mono WAV "
+            "and removing dead pauses."
+        ),
+    )
+
+    parser.add_argument(
         "--translation-model",
         type=str,
         choices=TRANSLATE_MODELS,
         default=DEFAULT_TRANSLATE_MODEL,
-        help=f"Model for English translation (default: {DEFAULT_TRANSLATE_MODEL}).",
+        help=f"Deprecated model flag (retained for backward compatibility).",
     )
 
     parser.add_argument(
@@ -1440,9 +1831,16 @@ def main() -> int:
         print(f" Speakers     : {spk_label}")
     if keyterm_list:
         print(f" Keyterms     : {len(keyterm_list)} term(s) loaded")
+    if args.test_clip:
+        print(f" Test Clip    : First {args.test_clip:.1f}s (Low-cost testing mode)")
+    if args.remove_silence:
+        print(" Silence Cut  : Enabled (Dead pauses stripped for cost reduction)")
+    if args.preprocess:
+        print(" Preprocess   : Enabled (16kHz mono audio normalization)")
     print(" Output DOCX  : 2 files (<name>_<Lang>.docx & <name>_English.docx)")
     if translate_to_english:
-        print(f" Trans. Model : {args.translation_model}")
+        tr_label = "Google Free (Zero API cost)" if args.translator == "google_free" else "Google Gemini"
+        print(f" Translator   : {tr_label}")
     extra_fmts = []
     if export_txt:
         extra_fmts.append("TXT")
@@ -1479,7 +1877,11 @@ def main() -> int:
             num_speakers=args.speakers,
             keyterms=keyterm_list,
             auto_translate=translate_to_english,
-            translation_model=args.translation_model,
+            translator=args.translator,
+            gemini_api_key=args.gemini_api_key,
+            test_clip_seconds=args.test_clip,
+            remove_silence=args.remove_silence,
+            preprocess=args.preprocess,
             export_txt=export_txt,
             export_csv=export_csv,
             export_json=export_json,

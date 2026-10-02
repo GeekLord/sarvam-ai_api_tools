@@ -140,15 +140,19 @@ def run_stt(
     num_speakers: float | None,
     keyterms: str | None,
     auto_translate: bool = True,
+    translator: str = "google_free",
+    gemini_api_key: str | None = None,
+    test_clip_seconds: float = 0,
+    remove_silence: bool = True,
     translation_model: str = stt_tool.DEFAULT_TRANSLATE_MODEL,
-) -> tuple[str, str, str, str, str | None]:
+) -> tuple[str, str, str, str, list[str] | None]:
     """
     Callback for the Speech-to-Text tab.
-    Transcribes audio, diarizes speakers, translates to English (en-IN),
-    and exports a formatted Microsoft Word (.docx) document.
+    Transcribes audio, diarizes speakers, translates to English (en-IN) using
+    zero-cost translation, and exports clean formatted Microsoft Word (.docx) deliverables.
 
     Returns:
-        (transcript, english_translation, diarized_timeline, detected_language, docx_path)
+        (transcript, english_translation, diarized_timeline, detected_language, docx_paths)
     """
     if not audio_file:
         raise gr.Error("Please upload or record an audio file to transcribe.")
@@ -175,6 +179,8 @@ def run_stt(
     if language_code and language_code.lower() not in ("auto", "unknown", "none", ""):
         lang = language_code
 
+    clip_sec = float(test_clip_seconds) if test_clip_seconds and float(test_clip_seconds) > 0 else None
+
     try:
         result = stt_tool.transcribe_single_audio(
             client=client,
@@ -186,6 +192,11 @@ def run_stt(
             num_speakers=spk_count,
             keyterms=keyterm_list,
             with_timestamps=True,
+            auto_translate=auto_translate,
+            translator=translator,
+            gemini_api_key=_blank_to_none(gemini_api_key),
+            test_clip_seconds=clip_sec,
+            remove_silence=remove_silence,
         )
     except Exception as exc:
         raise gr.Error(str(exc)) from exc
@@ -228,10 +239,10 @@ def run_stt(
                     )
                 )
                 english_translation, _ = stt_tool.translate_to_english(
-                    client=client,
                     text=text_to_translate,
                     source_language_code=src_code,
-                    model=translation_model,
+                    translator=translator,
+                    gemini_api_key=_blank_to_none(gemini_api_key),
                 )
             except Exception as tr_err:
                 english_translation = f"[Translation note: {tr_err}]"
@@ -269,7 +280,7 @@ def run_stt(
             # 2. English Translation DOCX: <stem>_English.docx (if original is not English)
             if clean_lang.lower() != "english" and detected_lang != "en-IN" and english_translation:
                 eng_docx_name = f"{path.stem}_English.docx"
-                eng_docx_path = temp_dir / eng_doc_name
+                eng_docx_path = temp_dir / eng_docx_name
                 try:
                     tr_lines = [ln.strip() for ln in english_translation.split("\n") if ln.strip()]
                     stt_tool.generate_transcript_docx(
@@ -539,14 +550,35 @@ def build_ui():
                         placeholder="e.g. Sarvam, New Delhi, Vistaar",
                     )
                 with gr.Row():
+                    stt_test_clip = gr.Number(
+                        label="Test Clip Duration (sec, 0 = Full Audio)",
+                        value=0,
+                        precision=0,
+                        minimum=0,
+                        info="Clip audio to first N seconds (e.g. 60 or 120s) for low-cost testing.",
+                    )
+                    stt_remove_silence = gr.Checkbox(
+                        label="Remove Silences & Pauses",
+                        value=True,
+                        info="Strips silence to reduce billable audio duration.",
+                    )
+                with gr.Row():
                     stt_auto_translate = gr.Checkbox(
                         label="Automatically translate to English (en-IN) & export .docx",
                         value=True,
                     )
-                    stt_translate_model = gr.Dropdown(
-                        label="Translation Model",
-                        choices=list(stt_tool.TRANSLATE_MODELS),
-                        value=stt_tool.DEFAULT_TRANSLATE_MODEL,
+                    stt_translator = gr.Dropdown(
+                        label="Translation Engine (Zero Sarvam Cost)",
+                        choices=[
+                            ("Google Free (Zero Cost / No Key)", "google_free"),
+                            ("Google Gemini (Requires API Key)", "gemini"),
+                        ],
+                        value="google_free",
+                    )
+                    stt_gemini_key = gr.Textbox(
+                        label="Gemini API Key (optional, if using Gemini)",
+                        type="password",
+                        placeholder="Leave blank to use GEMINI_API_KEY from env",
                     )
                 stt_button = gr.Button("Transcribe & Translate Audio", variant="primary")
                 with gr.Row():
@@ -569,7 +601,10 @@ def build_ui():
                         stt_speakers,
                         stt_keyterms,
                         stt_auto_translate,
-                        stt_translate_model,
+                        stt_translator,
+                        stt_gemini_key,
+                        stt_test_clip,
+                        stt_remove_silence,
                     ],
                     outputs=[
                         stt_transcript,
