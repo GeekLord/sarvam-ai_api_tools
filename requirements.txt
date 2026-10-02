@@ -1,5 +1,5 @@
 # Core Dependencies (Shared across all Sarvam AI API Tools)
-sarvamai>=0.1.0
+sarvamai>=0.1.35
 python-dotenv>=1.0.0
 requests>=2.31.0
 

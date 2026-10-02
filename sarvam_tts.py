@@ -15,10 +15,12 @@ Features:
 - Automatic long-text chunking: inputs above the model character limit are
   split on paragraph/sentence boundaries and the resulting audio bytes are
   concatenated into one output file per unit, so nothing is truncated.
-- Selectable speaker personas per model with model-vs-speaker validation.
+- Selectable speaker personas per model (37 voices for bulbul:v3, 7 for bulbul:v2).
 - Model-aware options: ``temperature`` for bulbul:v3; ``pitch`` /
   ``loudness`` / ``enable_preprocessing`` for bulbul:v2 (validated and
   skipped with a warning when used against the wrong model).
+- Pronunciation Dictionary: support custom phonetic overrides via ``--dict-id``.
+- Cached Responses: enable server-side deterministic caching via ``--enable-cached-responses``.
 - Automatic rate-limit management: polite cooldowns, exponential backoff
   with jitter, and 429 detection; continues past per-item failures.
 - Graceful shutdown: SIGINT/SIGTERM flushes the run manifest before exit.
@@ -414,9 +416,17 @@ def synthesize_chunk(
         "output_audio_codec": args.codec,
     }
 
-    # Common optional.
+    # Common optional pace control
     if args.pace is not None:
         kwargs["pace"] = args.pace
+
+    # Custom pronunciation dictionary ID (Sarvam AI Pronunciation Dictionary)
+    if getattr(args, "dict_id", None):
+        kwargs["dict_id"] = args.dict_id
+
+    # Server-side caching of generated responses
+    if getattr(args, "enable_cached_responses", False):
+        kwargs["enable_cached_responses"] = True
 
     # Model-specific optionals (validated/filtered in validate_args()).
     if args.model == "bulbul:v3":
@@ -538,6 +548,8 @@ def write_unit_outputs(
         "pitch": args.pitch,
         "loudness": args.loudness,
         "temperature": args.temperature,
+        "dict_id": getattr(args, "dict_id", None),
+        "enable_cached_responses": getattr(args, "enable_cached_responses", False),
         "enable_preprocessing": args.enable_preprocessing,
         "speech_sample_rate": args.sample_rate,
         "output_audio_codec": args.codec,
@@ -721,6 +733,17 @@ def parse_args() -> argparse.Namespace:
         "--enable-preprocessing",
         action="store_true",
         help="Enable text normalization/preprocessing (bulbul:v2 only).",
+    )
+    parser.add_argument(
+        "--dict-id",
+        type=str,
+        default=None,
+        help="Optional pronunciation dictionary ID for custom phonetic corrections (Sarvam Pronunciation Dictionary API).",
+    )
+    parser.add_argument(
+        "--enable-cached-responses",
+        action="store_true",
+        help="Enable server-side cached responses for deterministic, faster responses on duplicate text.",
     )
     parser.add_argument(
         "--list-speakers",
