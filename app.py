@@ -138,10 +138,16 @@ def run_stt(
     with_diarization: bool,
     num_speakers: float | None,
     keyterms: str | None,
-) -> tuple[str, str, str]:
+    auto_translate: bool = True,
+    translation_model: str = stt_tool.DEFAULT_TRANSLATE_MODEL,
+) -> tuple[str, str, str, str, str | None]:
     """
     Callback for the Speech-to-Text tab.
-    Returns (transcript, diarized_timeline, detected_language).
+    Transcribes audio, diarizes speakers, translates to English (en-IN),
+    and exports a formatted Microsoft Word (.docx) document.
+
+    Returns:
+        (transcript, english_translation, diarized_timeline, detected_language, docx_path)
     """
     if not audio_file:
         raise gr.Error("Please upload or record an audio file to transcribe.")
@@ -200,7 +206,63 @@ def run_stt(
     else:
         timeline_text = "[Full transcript without speaker turns shown above]"
 
-    return transcript or "[No transcript returned]", timeline_text, detected_lang
+    # English translation & DOCX generation
+    english_translation = ""
+    docx_file_path: str | None = None
+
+    if auto_translate:
+        text_to_translate = timeline_text if (segments and timeline_lines) else transcript
+        if mode == "translate":
+            # ASR was run in translate mode directly yielding English
+            english_translation = text_to_translate
+        else:
+            try:
+                src_code = (
+                    lang
+                    if (lang and lang != "auto")
+                    else (
+                        detected_lang
+                        if detected_lang not in ("auto-detected", "unknown")
+                        else None
+                    )
+                )
+                english_translation, _ = stt_tool.translate_to_english(
+                    client=client,
+                    text=text_to_translate,
+                    source_language_code=src_code,
+                    model=translation_model,
+                )
+            except Exception as tr_err:
+                english_translation = f"[Translation note: {tr_err}]"
+
+        # Generate .docx document with the input file name in a temporary directory
+        if getattr(stt_tool, "HAS_DOCX", False):
+            temp_dir = Path(tempfile.mkdtemp(prefix="sarvam_stt_"))
+            docx_output_path = temp_dir / f"{path.stem}.docx"
+            try:
+                stt_tool.generate_translation_docx(
+                    audio_path=path,
+                    result_json=result,
+                    translated_text=english_translation or transcript,
+                    source_lang=detected_lang,
+                    output_docx_path=docx_output_path,
+                    asr_model=model,
+                    translation_model=translation_model,
+                )
+                docx_file_path = str(docx_output_path)
+            except Exception as docx_err:
+                print(f"[!] Warning: failed to generate .docx in web UI: {docx_err}")
+                docx_file_path = None
+    else:
+        english_translation = "[Translation disabled via option]"
+
+    return (
+        transcript or "[No transcript returned]",
+        english_translation,
+        timeline_text,
+        detected_lang,
+        docx_file_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -441,10 +503,23 @@ def build_ui():
                         label="Custom Keyterms (saaras:v4 only, comma-separated)",
                         placeholder="e.g. Sarvam, New Delhi, Vistaar",
                     )
-                stt_button = gr.Button("Transcribe Audio", variant="primary")
                 with gr.Row():
-                    stt_transcript = gr.Textbox(label="Full Transcript", lines=6)
+                    stt_auto_translate = gr.Checkbox(
+                        label="Automatically translate to English (en-IN) & export .docx",
+                        value=True,
+                    )
+                    stt_translate_model = gr.Dropdown(
+                        label="Translation Model",
+                        choices=list(stt_tool.TRANSLATE_MODELS),
+                        value=stt_tool.DEFAULT_TRANSLATE_MODEL,
+                    )
+                stt_button = gr.Button("Transcribe & Translate Audio", variant="primary")
+                with gr.Row():
+                    stt_transcript = gr.Textbox(label="Original Transcript (Native)", lines=6)
+                    stt_english = gr.Textbox(label="English Translation (en-IN)", lines=6)
+                with gr.Row():
                     stt_timeline = gr.Textbox(label="Speaker Diarization / Dialogue Timeline", lines=6)
+                    stt_docx_file = gr.File(label="Download Formatted Word Document (.docx)")
                 stt_detected = gr.Textbox(label="Detected Language Code")
 
                 stt_button.click(
@@ -458,8 +533,16 @@ def build_ui():
                         stt_diarize,
                         stt_speakers,
                         stt_keyterms,
+                        stt_auto_translate,
+                        stt_translate_model,
                     ],
-                    outputs=[stt_transcript, stt_timeline, stt_detected],
+                    outputs=[
+                        stt_transcript,
+                        stt_english,
+                        stt_timeline,
+                        stt_detected,
+                        stt_docx_file,
+                    ],
                 )
 
             # ----------------------------- Translate -----------------------
