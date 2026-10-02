@@ -105,23 +105,25 @@ python sarvam_doc_ocr.py --api-key "your_api_key_here"
   * `codemix`: code-mixed output (e.g., Hinglish) matching natural spoken style.
 * **Speaker diarization**: Automatically detects speaker turns or constrains detection to a known number of speakers (`--speakers 1-20`). Can be disabled with `--no-diarization`.
 * **Domain keyterms biasing**: Provide up to 50 custom domain names, brand terms, or technical words via `--keyterms` to bias recognition in `saaras:v4`.
-* **Three output formats per audio file**:
-  1. `[filename].txt`: Text dialogue with speaker labels and timestamps:
+* **Four output formats per audio file**:
+  1. `[filename].docx`: Formatted Microsoft Word document featuring an executive metadata summary, English (`en-IN`) translated dialogue with distinct colored speaker turns & timestamps, and the original native transcript.
+  2. `[filename].txt`: Text dialogue with speaker labels and timestamps:
      ```
      [00:00:01.200 - 00:00:04.550] Speaker 1: Good morning and welcome to the session.
      [00:00:04.800 - 00:00:08.100] Speaker 2: Thank you, glad to be here.
      ```
-  2. `[filename].csv`: Spreadsheet with columns for `speaker`, `start_time_seconds`, `end_time_seconds`, `start_time`, `end_time`, and `transcript`.
-  3. `[filename].json`: The complete raw response from the Sarvam AI API.
+  3. `[filename].csv`: Spreadsheet with columns for `speaker`, `start_time_seconds`, `end_time_seconds`, `start_time`, `end_time`, and `transcript`.
+  4. `[filename].json`: The complete raw response from the Sarvam AI API.
+* **Automatic English (en-IN) translation & Word (.docx) export**: Transcribed audio across all 22 Indic languages is automatically translated into English (`en-IN`) using the Sarvam Translation API (`sarvam-translate:v1` / `mayura:v1`) and saved as `.docx` with the same input file name in the output directory. Can be bypassed using `--no-translate`.
 * **Batch processing**: Groups folder files into batches (`--batch-size 20`), isolates uploads in temporary directories, and continues processing remaining files if an individual file fails.
 
 ### Usage examples
 
 ```bash
-# Transcribe all audio files in the current folder (automatic speaker detection)
+# Transcribe all audio files in the current folder (automatic speaker detection & English docx generation)
 python transcribe_sarvam.py
 
-# Transcribe a single audio file directly
+# Transcribe a single audio file directly (generates .docx, .txt, .csv, .json)
 python transcribe_sarvam.py "interview.mp3"
 
 # Transcribe files in a specific folder
@@ -130,11 +132,17 @@ python transcribe_sarvam.py "C:\Recordings\Interviews"
 # Set an expected speaker count for a two-person interview
 python transcribe_sarvam.py "C:\Recordings\Interviews" --speakers 2
 
-# Transcribe and translate Indic audio directly to English
+# Transcribe and translate Indic audio directly to English via ASR model
 python transcribe_sarvam.py "speech.wav" --mode translate
 
 # Bias recognition toward specific technical or brand terms using saaras:v4
 python transcribe_sarvam.py "lecture.mp3" --keyterms "Sarvam,Kubernetes,FastAPI"
+
+# Skip English translation and Word document export
+python transcribe_sarvam.py "interview.mp3" --no-translate
+
+# Use mayura:v1 for English translation
+python transcribe_sarvam.py "interview.mp3" --translation-model mayura:v1
 
 # Save outputs to a custom folder and process 10 files per batch
 python transcribe_sarvam.py "C:\Recordings" -o "C:\Transcripts" --batch-size 10
@@ -155,6 +163,8 @@ python transcribe_sarvam.py "C:\Recordings" --api-key "your_api_key_here"
 | `--no-diarization` | | `False` | Disable speaker diarization |
 | `--with-timestamps` | | `True` | Include phrase/chunk timestamps in the output |
 | `--keyterms` | | `None` | Comma-separated domain terms to bias recognition (`saaras:v4` only) |
+| `--no-translate` | | `False` | Disable automatic translation to English (en-IN) and .docx export |
+| `--translation-model` | | `sarvam-translate:v1` | Model for English translation (`sarvam-translate:v1` or `mayura:v1`) |
 | `--output-dir` | `-o` | `<path>/sarvam_transcripts` | Destination folder for transcripts |
 | `--batch-size` | | `20` | Audio files uploaded per API batch job |
 | `--api-key` | | Env / `.env` | Sarvam AI subscription key |
@@ -163,6 +173,7 @@ python transcribe_sarvam.py "C:\Recordings" --api-key "your_api_key_here"
 
 ```
 sarvam_transcripts/
+├── interview_01.docx     # Formatted Word doc with English translation & native transcript
 ├── interview_01.txt      # Formatted transcript with speaker timestamps
 ├── interview_01.csv      # CSV timeline for spreadsheets
 └── interview_01.json     # Complete raw Sarvam API response
