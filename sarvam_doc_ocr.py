@@ -109,9 +109,11 @@ IGNORED_DIRS = {
     "sarvam_ocr_output",
 }
 
-# Terminal job statuses (compared case-insensitively).
-COMPLETED_STATUSES = {"completed", "success", "succeeded", "done", "complete"}
-FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
+# Terminal job statuses (compared case-insensitively) as documented by Sarvam Doc-AI:
+# terminal statuses: 'completed', 'partially_completed', 'failed', 'rejected'.
+# 'partially_completed' contains valid page extractions and must not block polling.
+COMPLETED_STATUSES = {"completed", "success", "succeeded", "done", "complete", "partially_completed"}
+FAILED_STATUSES = {"failed", "error", "cancelled", "canceled", "rejected"}
 
 # File extension for the per-document text artifact by output format.
 TEXT_SUFFIX_BY_FORMAT = {"md": ".md", "html": ".html", "json": ".txt"}

@@ -2,21 +2,18 @@
 Sarvam AI Tools - Gradio Web Front End
 ======================================
 An interactive web UI for testing the Sarvam AI command-line tools in this
-suite without touching the terminal. It is a NEW, additive artifact: it does
-NOT modify or refactor the individual tool scripts. Instead it honors the
-"one tool = one script" philosophy by IMPORTING each script's module-level
-worker functions and constants and calling them in-process.
+suite without touching the terminal. It honors the "one tool = one script"
+philosophy by IMPORTING each tool script's module-level worker functions and
+constants and calling them in-process.
 
 Wired tabs:
-- Translate       -> sarvam_translate.translate_unit
+- Speech-to-Text  -> transcribe_sarvam.transcribe_single_audio
 - Text-to-Speech  -> sarvam_tts.synthesize_unit
+- Translate       -> sarvam_translate.translate_unit
 - Document OCR    -> sarvam_doc_ocr.digitise_document
 
-Transcription (transcribe_sarvam.py) and the Image Renamer
-(sarvam_image_renamer.py) are deliberately NOT wired here: both are
-batch/folder oriented and do not expose a clean single-item worker function,
-so wiring them cleanly would require refactoring those scripts (which is
-forbidden for this task). See the feature findings for details.
+The Image Renamer (sarvam_image_renamer.py) is a batch/folder oriented CLI tool
+with rollback history and runs directly from the terminal.
 
 API key handling: the UI provides a password field. When it is left blank the
 resolver falls back to get_api_key(None, target_dir), which reads
@@ -34,12 +31,7 @@ import types
 from pathlib import Path
 
 # Guard the gradio import so the module can be inspected (and give a friendly
-# hint) even when gradio is not installed. Mirrors the HAS_SARVAM pattern used
-# by the tool scripts. We keep the ACTUAL import error around (GRADIO_IMPORT_ERROR)
-# so the failure message can surface the real cause instead of a misleading
-# "gradio is not installed" hint. This matters on Python 3.13, where gradio
-# imports pydub -> audioop/pyaudioop (removed from the stdlib in PEP 594); a
-# bare "not installed" message hid that the audioop-lts backport was missing.
+# hint) even when gradio is not installed.
 try:
     import gradio as gr
 
@@ -55,10 +47,9 @@ def _gradio_error_detail() -> str:
     """
     Build an actionable message describing why gradio could not be imported.
 
-    Surfaces the real underlying ImportError (and the offending module, when
-    known) instead of assuming gradio itself is simply not installed, so a
-    transitive failure like a missing ``audioop``/``pyaudioop`` backport on
-    Python 3.13 is not masked.
+    Surfaces the real underlying ImportError instead of assuming gradio itself
+    is simply not installed, so a transitive failure like a missing audioop backport
+    on Python 3.13 is not masked.
     """
     base = (
         "The 'gradio' package (or one of its dependencies) failed to import. "
@@ -72,8 +63,8 @@ def _gradio_error_detail() -> str:
     return f"{base}\nUnderlying import error{offending}: {exc}"
 
 
-# Sarvam AI SDK (needed to instantiate a client per call). Guarded like the
-# tool scripts so importing app.py never crashes on a missing dependency.
+# Sarvam AI SDK (instantiated per call). Guarded like the tool scripts so
+# importing app.py never crashes on a missing dependency.
 try:
     from sarvamai import SarvamAI
 
@@ -83,23 +74,20 @@ except ImportError:
     HAS_SARVAM = False
 
 # Import each tool module under an alias to avoid colliding constant names
-# (each defines its own SUPPORTED_LANGUAGES / MODELS / char_limit_for_model /
-# get_api_key, etc.). Importing is safe: load_dotenv() and the sarvamai import
-# are guarded in every module, and each main() is under `if __name__ ...`.
+# (each defines its own SUPPORTED_LANGUAGES / MODELS / get_api_key, etc.).
 import sarvam_doc_ocr as ocr_tool
 import sarvam_translate as translate_tool
 import sarvam_tts as tts_tool
+import transcribe_sarvam as stt_tool
 
 # Directory used for the .env fallback when the key field is blank.
 TARGET_DIR = Path(__file__).resolve().parent
 
-# UI-facing OCR poll timeout (seconds). The CLI default (ocr_tool.DEFAULT_TIMEOUT,
-# 600s) is fine for a batch script but too long to hold a web request thread.
-# Cap it lower so a single slow document cannot tie up a worker for ten minutes.
+# UI-facing OCR poll timeout (seconds). Cap lower than CLI DEFAULT_TIMEOUT (600s)
+# so a slow document does not tie up a web worker for 10 minutes.
 OCR_UI_TIMEOUT = 120.0
 
-# Guidance shown when no API key can be resolved (mirrors the CLI wording,
-# never echoes any key value).
+# Guidance shown when no API key can be resolved (mirrors the CLI wording).
 _MISSING_KEY_MESSAGE = (
     "Sarvam AI API subscription key was not found. Provide it via one of:\n"
     "  1. The 'Sarvam API key' field above.\n"
@@ -139,6 +127,83 @@ def _resolve_client(api_key_field: str | None) -> SarvamAI:
 
 
 # ---------------------------------------------------------------------------
+# Speech-to-Text (Transcription & Diarization)
+# ---------------------------------------------------------------------------
+def run_stt(
+    api_key: str | None,
+    audio_file,
+    model: str,
+    mode: str,
+    language_code: str,
+    with_diarization: bool,
+    num_speakers: float | None,
+    keyterms: str | None,
+) -> tuple[str, str, str]:
+    """
+    Callback for the Speech-to-Text tab.
+    Returns (transcript, diarized_timeline, detected_language).
+    """
+    if not audio_file:
+        raise gr.Error("Please upload or record an audio file to transcribe.")
+
+    audio_path = getattr(audio_file, "name", audio_file)
+    path = Path(audio_path)
+    if not path.is_file():
+        raise gr.Error("The provided audio file could not be read.")
+
+    client = _resolve_client(api_key)
+
+    # Parse keyterms (up to 50 terms, comma-separated)
+    keyterm_list: list[str] | None = None
+    if keyterms and keyterms.strip():
+        keyterm_list = [k.strip() for k in keyterms.split(",") if k.strip()][:50]
+
+    # Parse speaker count
+    spk_count: int | None = None
+    if with_diarization and num_speakers is not None and int(num_speakers) > 0:
+        spk_count = int(num_speakers)
+
+    # Language code normalization
+    lang = None
+    if language_code and language_code.lower() not in ("auto", "unknown", "none", ""):
+        lang = language_code
+
+    try:
+        result = stt_tool.transcribe_single_audio(
+            client=client,
+            audio_path=path,
+            model=model,
+            mode=mode,
+            language_code=lang,
+            with_diarization=with_diarization,
+            num_speakers=spk_count,
+            keyterms=keyterm_list,
+            with_timestamps=True,
+        )
+    except Exception as exc:
+        raise gr.Error(str(exc)) from exc
+
+    transcript = str(result.get("transcript", "")).strip()
+    detected_lang = str(result.get("language_code", "auto-detected"))
+
+    # Format segments if diarization or timestamps are present
+    segments = stt_tool.extract_segments(result)
+    timeline_lines: list[str] = []
+    if segments:
+        for seg in segments:
+            start_str = stt_tool.format_time(seg.get("start"))
+            end_str = stt_tool.format_time(seg.get("end"))
+            spk = seg.get("speaker", "Speaker")
+            text_part = seg.get("text", "")
+            timeline_lines.append(f"[{start_str} - {end_str}] {spk}: {text_part}")
+        timeline_text = "\n".join(timeline_lines)
+    else:
+        timeline_text = "[Full transcript without speaker turns shown above]"
+
+    return transcript or "[No transcript returned]", timeline_text, detected_lang
+
+
+# ---------------------------------------------------------------------------
 # Translate
 # ---------------------------------------------------------------------------
 def run_translate(
@@ -173,22 +238,13 @@ def run_translate(
     )
 
     limit = translate_tool.char_limit_for_model(model)
-    # translate_unit reads/writes the tool module's process-wide STATE.cache
-    # singleton. In this long-lived server that dict would otherwise grow
-    # unbounded and be shared across every request. Reset it per call so no
-    # cross-request state accumulates (cache_path is None, so nothing is
-    # flushed to disk and this is purely an in-memory reset). This reset
-    # assumes serialized execution (the default demo.queue() concurrency);
-    # if request concurrency is ever raised, key the cache per request
-    # instead so concurrent calls do not clobber each other's chunk cache.
+    # Reset in-memory cache per call to avoid cross-request accumulation
     translate_tool.STATE.cache = {}
     try:
         result = translate_tool.translate_unit(client, text, "gradio", args, limit)
     except Exception as exc:
-        # Surface any failure in the UI rather than crashing the server.
         raise gr.Error(str(exc)) from exc
     finally:
-        # Drop any entries populated during this call so memory does not grow.
         translate_tool.STATE.cache = {}
 
     detected = str(result.get("source_language_code") or args.source)
@@ -226,6 +282,8 @@ def run_tts(
     pitch: float | None,
     loudness: float | None,
     enable_preprocessing: bool,
+    dict_id: str | None,
+    enable_cached_responses: bool,
 ) -> str:
     """Callback for the TTS tab. Returns a path to the generated audio file."""
     if not _blank_to_none(text):
@@ -244,13 +302,14 @@ def run_tts(
         sample_rate=int(sample_rate),
         codec=codec,
         enable_preprocessing=bool(enable_preprocessing),
+        dict_id=_blank_to_none(dict_id),
+        enable_cached_responses=bool(enable_cached_responses),
         list_speakers=False,
         delay=0.0,
         max_retries=tts_tool.DEFAULT_MAX_RETRIES,
     )
 
-    # validate_args normalizes speaker/model-specific options in-place and
-    # returns an error string (or None). Convert any error into a gr.Error.
+    # validate_args normalizes speaker/model-specific options in-place
     error = tts_tool.validate_args(args)
     if error:
         raise gr.Error(error)
@@ -259,15 +318,13 @@ def run_tts(
     try:
         result = tts_tool.synthesize_unit(client, text, "gradio", args, limit)
     except Exception as exc:
-        # Surface any failure in the UI rather than crashing the server.
         raise gr.Error(str(exc)) from exc
 
     audio_bytes = result.get("audio_bytes") or b""
     if not audio_bytes:
         raise gr.Error("No audio was returned by the API.")
 
-    # Write to a tempfile so playback/download works; user inputs are never
-    # mutated. delete=False keeps the file around for Gradio to serve.
+    # Write to a tempfile so playback/download works; delete=False keeps it for Gradio
     ext = tts_tool.CODEC_EXTENSIONS.get(args.codec, ".wav")
     fd, tmp_path = tempfile.mkstemp(prefix="sarvam_tts_", suffix=ext)
     with os.fdopen(fd, "wb") as fh:
@@ -290,7 +347,6 @@ def run_ocr(
     if not file_obj:
         raise gr.Error("Please upload a document to digitize.")
 
-    # gr.File provides a real temp path on disk, which digitise_document needs.
     upload_path = getattr(file_obj, "name", file_obj)
     path = Path(upload_path)
     if not path.is_file():
@@ -305,15 +361,12 @@ def run_ocr(
         model=_blank_to_none(model),
         delay=ocr_tool.DEFAULT_DELAY,
         max_retries=ocr_tool.DEFAULT_MAX_RETRIES,
-        # Bound the blocking poll so a slow document does not hold the worker
-        # thread for the full CLI DEFAULT_TIMEOUT (600s).
         timeout=OCR_UI_TIMEOUT,
     )
 
     try:
         payload = ocr_tool.digitise_document(client, path, args)
     except Exception as exc:
-        # Surface any failure in the UI rather than crashing the server.
         raise gr.Error(str(exc)) from exc
 
     body = str(payload.get("body") or "[No text extracted]")
@@ -324,25 +377,21 @@ def run_ocr(
 
 
 # ---------------------------------------------------------------------------
-# UI construction
+# UI Construction
 # ---------------------------------------------------------------------------
 def build_ui():
-    """
-    Construct and return the Gradio Blocks for the Sarvam tools front end.
-
-    Kept separate from launch() so tests can build the UI object without
-    starting a server or needing an API key.
-    """
+    """Construct and return the Gradio Blocks application."""
     if not HAS_GRADIO:
         raise RuntimeError(_gradio_error_detail()) from GRADIO_IMPORT_ERROR
 
+    stt_langs = ["auto"] + [k for k in sorted(stt_tool.SUPPORTED_LANGUAGES) if k != "unknown"]
     translate_langs = ["auto"] + sorted(translate_tool.SUPPORTED_LANGUAGES)
     translate_targets = sorted(translate_tool.SUPPORTED_LANGUAGES)
     tts_langs = sorted(tts_tool.SUPPORTED_LANGUAGES)
 
     with gr.Blocks(title="Sarvam AI Tools") as demo:
         gr.Markdown(
-            "# Sarvam AI Tools\n"
+            "# Sarvam AI Tools Suite\n"
             "Interactively test the Sarvam AI command-line tools. Enter your "
             "Sarvam API key below (or leave it blank to use `SARVAM_API_KEY` "
             "from your environment or a local `.env` file)."
@@ -354,6 +403,65 @@ def build_ui():
         )
 
         with gr.Tabs():
+            # -------------------------- Speech-to-Text ---------------------
+            with gr.Tab("Speech-to-Text"):
+                with gr.Row():
+                    stt_audio = gr.Audio(
+                        label="Audio recording (Upload file or Record microphone)",
+                        sources=["upload", "microphone"],
+                        type="filepath",
+                    )
+                with gr.Row():
+                    stt_model = gr.Dropdown(
+                        label="Model",
+                        choices=list(stt_tool.MODELS),
+                        value=stt_tool.DEFAULT_MODEL,
+                    )
+                    stt_mode = gr.Dropdown(
+                        label="Mode",
+                        choices=list(stt_tool.MODES),
+                        value=stt_tool.DEFAULT_MODE,
+                    )
+                    stt_language = gr.Dropdown(
+                        label="Audio Language",
+                        choices=stt_langs,
+                        value="auto",
+                    )
+                with gr.Row():
+                    stt_diarize = gr.Checkbox(
+                        label="Enable Speaker Diarization",
+                        value=True,
+                    )
+                    stt_speakers = gr.Number(
+                        label="Expected Speakers (optional, 1-20)",
+                        value=None,
+                        precision=0,
+                    )
+                    stt_keyterms = gr.Textbox(
+                        label="Custom Keyterms (saaras:v4 only, comma-separated)",
+                        placeholder="e.g. Sarvam, New Delhi, Vistaar",
+                    )
+                stt_button = gr.Button("Transcribe Audio", variant="primary")
+                with gr.Row():
+                    stt_transcript = gr.Textbox(label="Full Transcript", lines=6)
+                    stt_timeline = gr.Textbox(label="Speaker Diarization / Dialogue Timeline", lines=6)
+                stt_detected = gr.Textbox(label="Detected Language Code")
+
+                stt_button.click(
+                    run_stt,
+                    inputs=[
+                        api_key,
+                        stt_audio,
+                        stt_model,
+                        stt_mode,
+                        stt_language,
+                        stt_diarize,
+                        stt_speakers,
+                        stt_keyterms,
+                    ],
+                    outputs=[stt_transcript, stt_timeline, stt_detected],
+                )
+
             # ----------------------------- Translate -----------------------
             with gr.Tab("Translate"):
                 tr_text = gr.Textbox(
@@ -462,8 +570,16 @@ def build_ui():
                     tts_loudness = gr.Number(
                         label="Loudness (bulbul:v2 only, optional)", value=None
                     )
+                with gr.Row():
                     tts_preprocess = gr.Checkbox(
                         label="Enable preprocessing (bulbul:v2 only)", value=False
+                    )
+                    tts_cached = gr.Checkbox(
+                        label="Enable cached responses", value=False
+                    )
+                    tts_dict_id = gr.Textbox(
+                        label="Pronunciation Dictionary ID (optional)",
+                        placeholder="e.g. dict_xyz",
                     )
                 tts_button = gr.Button("Synthesize", variant="primary")
                 tts_audio = gr.Audio(label="Synthesized audio", type="filepath")
@@ -488,6 +604,8 @@ def build_ui():
                         tts_pitch,
                         tts_loudness,
                         tts_preprocess,
+                        tts_dict_id,
+                        tts_cached,
                     ],
                     outputs=[tts_audio],
                 )
@@ -531,9 +649,8 @@ def build_ui():
                 )
 
         gr.Markdown(
-            "_Note: Transcription and Image Renamer are batch/folder oriented "
-            "CLI tools and are not exposed here; run them from the command "
-            "line._"
+            "_Note: Image Renamer is a batch/folder oriented CLI tool and is run "
+            "directly from the command line (`python sarvam_image_renamer.py`)._"
         )
 
     return demo
@@ -547,8 +664,6 @@ def main() -> int:
         return 1
 
     demo = build_ui()
-    # Enable the request queue so a slow, blocking call (e.g. an OCR poll) is
-    # scheduled rather than starving other concurrent requests.
     demo.queue()
     demo.launch()
     return 0

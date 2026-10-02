@@ -7,7 +7,7 @@
 
 Python command-line tools for [Sarvam AI](https://www.sarvam.ai/) APIs. The suite currently includes five tools: speech-to-text audio transcription with speaker diarization, automated image renaming with metadata catalog generation, text translation across Indic languages and English, text-to-speech voice synthesis, and document OCR and parsing.
 
-Each tool runs standalone, handles API rate limits with polite request cooldowns and backoff, and shares a single API key configuration. An optional [Gradio web front end](#web-front-end-apppy) (`app.py`) is also included so you can interactively test the Translation, Text-to-Speech, and Document OCR tools from your browser.
+Each tool runs standalone, handles API rate limits with polite request cooldowns and backoff, and shares a single API key configuration. An interactive [Gradio web front end](#web-front-end-apppy) (`app.py`) is also included so you can interactively test the Speech-to-Text, Translation, Text-to-Speech, and Document OCR tools directly from your browser.
 
 ---
 
@@ -15,11 +15,11 @@ Each tool runs standalone, handles API rate limits with polite request cooldowns
 
 | Tool | Script | API / Model | Status | Capabilities |
 | :--- | :--- | :--- | :--- | :--- |
-| **Speech Transcription and Diarization** | [`transcribe_sarvam.py`](file:///h:/Desktop/sarvam-ai_api_tools/transcribe_sarvam.py) | Sarvam Speech-to-Text (`saaras:v4`) | Active | Multilingual speech transcription, speaker diarization (auto or 1-20 speakers), formatted millisecond dialogue transcripts (`.txt`), chronological timeline spreadsheets (`.csv`), and raw API payloads (`.json`). |
+| **Speech Transcription and Diarization** | [`transcribe_sarvam.py`](file:///h:/Desktop/sarvam-ai_api_tools/transcribe_sarvam.py) | Sarvam Speech-to-Text (`saaras:v4`, `saaras:v3`) | Active | Multilingual speech transcription for single files or folders, multiple modes (`transcribe`, `translate` to English, `verbatim`, `translit`, `codemix`), custom vocabulary keyterms biasing, speaker diarization (auto or 1-20 speakers), formatted millisecond dialogue transcripts (`.txt`), chronological timeline spreadsheets (`.csv`), and raw API payloads (`.json`). |
 | **Image Renamer and Metadata Cataloger** | [`sarvam_image_renamer.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_image_renamer.py) | Sarvam Document Intelligence | Active | Recursive image scanning, MD5 hash deduplication, descriptive slug generation, non-destructive renaming, rollback with history logs, and Markdown/CSV/JSON catalogs. |
-| **Text Translation** | [`sarvam_translate.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_translate.py) | Sarvam Translation (`mayura:v1`) | Active | Batch and literal-text translation across Indic languages and English, `auto` source detection, register/script/numeral controls, long-text chunking, resumable cache, and Markdown/CSV/JSON exports. |
-| **Text-to-Speech (TTS)** | [`sarvam_tts.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_tts.py) | Sarvam Voice Synthesis (`bulbul:v3`) | Active | Voice synthesis with selectable speaker personas, multiple codecs and sample rates, automatic long-text chunking, and per-unit audio plus Markdown/CSV/JSON catalogs. |
-| **Document OCR and Parser** | [`sarvam_doc_ocr.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_doc_ocr.py) | Sarvam Document Intelligence | Active | Digitizes PDFs and images into Markdown/HTML/text with table parsing, MD5 deduplication, resumable cache, polling with timeout, and Markdown/CSV/JSON catalogs. |
+| **Text Translation** | [`sarvam_translate.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_translate.py) | Sarvam Translation (`mayura:v1`, `sarvam-translate:v1`) | Active | Batch and literal-text translation across 23 languages (22 Indic languages + English), `auto` source detection, register/script/numeral controls, long-text chunking, resumable cache, and Markdown/CSV/JSON exports. |
+| **Text-to-Speech (TTS)** | [`sarvam_tts.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_tts.py) | Sarvam Voice Synthesis (`bulbul:v3`, `bulbul:v2`) | Active | Voice synthesis with 44 selectable speaker personas, pronunciation dictionaries (`--dict-id`), server-side cached responses, multiple codecs and sample rates, automatic long-text chunking, and per-unit audio plus Markdown/CSV/JSON catalogs. |
+| **Document OCR and Parser** | [`sarvam_doc_ocr.py`](file:///h:/Desktop/sarvam-ai_api_tools/sarvam_doc_ocr.py) | Sarvam Document Intelligence | Active | Digitizes PDFs and images into Markdown/HTML/text with table parsing, MD5 deduplication, resumable cache, polling with timeout, resilient terminal status handling, and Markdown/CSV/JSON catalogs. |
 
 ---
 
@@ -89,13 +89,22 @@ python sarvam_doc_ocr.py --api-key "your_api_key_here"
 
 ## Tool 1: Speech Transcription and Diarization (`transcribe_sarvam.py`)
 
-`transcribe_sarvam.py` transcribes audio files using Sarvam's `saaras:v4` speech model, identifies distinct speakers through diarization, timestamps each speech turn to the millisecond, and writes outputs in three formats.
+`transcribe_sarvam.py` transcribes audio files using Sarvam's `saaras:v4` or `saaras:v3` speech models, identifies distinct speakers through diarization, timestamps each speech turn to the millisecond, and writes outputs in three formats. It supports passing an individual audio file directly or scanning a folder of recordings.
 
 ### Supported audio formats
 `.wav`, `.mp3`, `.aac`, `.m4a`, `.mp4`, `.flac`, `.ogg`, `.opus`, `.aiff`, `.aif`, `.amr`, `.wma`, `.webm`
 
 ### Features
-* **Speaker diarization**: Automatically detects speaker turns or constrains detection to a known number of speakers (`--speakers 1-20`).
+* **Single-file or folder input**: Process a single recording (`python transcribe_sarvam.py recording.mp3`) or an entire folder.
+* **Model selection**: Choose between `saaras:v4` (default, latest multilingual ASR supporting Indian and Global English + 22 Indian languages) and `saaras:v3`.
+* **Multiple output modes**:
+  * `transcribe` (default): standard transcription in the original language.
+  * `translate`: transcribe and translate Indic speech directly into English.
+  * `verbatim`: exact word-for-word transcript preserving filler words and numbers.
+  * `translit`: romanized transliteration into Latin/Roman script.
+  * `codemix`: code-mixed output (e.g., Hinglish) matching natural spoken style.
+* **Speaker diarization**: Automatically detects speaker turns or constrains detection to a known number of speakers (`--speakers 1-20`). Can be disabled with `--no-diarization`.
+* **Domain keyterms biasing**: Provide up to 50 custom domain names, brand terms, or technical words via `--keyterms` to bias recognition in `saaras:v4`.
 * **Three output formats per audio file**:
   1. `[filename].txt`: Text dialogue with speaker labels and timestamps:
      ```
@@ -104,7 +113,7 @@ python sarvam_doc_ocr.py --api-key "your_api_key_here"
      ```
   2. `[filename].csv`: Spreadsheet with columns for `speaker`, `start_time_seconds`, `end_time_seconds`, `start_time`, `end_time`, and `transcript`.
   3. `[filename].json`: The complete raw response from the Sarvam AI API.
-* **Batch processing**: Groups files into batches (`--batch-size 20`), isolates uploads in temporary directories, and continues processing remaining files if an individual file fails.
+* **Batch processing**: Groups folder files into batches (`--batch-size 20`), isolates uploads in temporary directories, and continues processing remaining files if an individual file fails.
 
 ### Usage examples
 
@@ -112,11 +121,20 @@ python sarvam_doc_ocr.py --api-key "your_api_key_here"
 # Transcribe all audio files in the current folder (automatic speaker detection)
 python transcribe_sarvam.py
 
+# Transcribe a single audio file directly
+python transcribe_sarvam.py "interview.mp3"
+
 # Transcribe files in a specific folder
 python transcribe_sarvam.py "C:\Recordings\Interviews"
 
 # Set an expected speaker count for a two-person interview
 python transcribe_sarvam.py "C:\Recordings\Interviews" --speakers 2
+
+# Transcribe and translate Indic audio directly to English
+python transcribe_sarvam.py "speech.wav" --mode translate
+
+# Bias recognition toward specific technical or brand terms using saaras:v4
+python transcribe_sarvam.py "lecture.mp3" --keyterms "Sarvam,Kubernetes,FastAPI"
 
 # Save outputs to a custom folder and process 10 files per batch
 python transcribe_sarvam.py "C:\Recordings" -o "C:\Transcripts" --batch-size 10
@@ -129,9 +147,15 @@ python transcribe_sarvam.py "C:\Recordings" --api-key "your_api_key_here"
 
 | Parameter | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `folder` | | `.` (Current Dir) | Folder containing audio files to transcribe |
+| `path` | | `.` (Current Dir) | Path to an audio file or folder containing audio files |
+| `--model` | | `saaras:v4` | Speech recognition model (`saaras:v4` or `saaras:v3`) |
+| `--mode` | | `transcribe` | Output mode: `transcribe`, `translate`, `verbatim`, `translit`, `codemix` |
+| `--language-code` / `--language` | | `None` (Auto) | Spoken language BCP-47 code (e.g. `hi-IN`, `en-IN`, or `unknown`) |
 | `--speakers` | | `None` (Auto) | Number of speakers to detect (1-20) |
-| `--output-dir` | `-o` | `<folder>/sarvam_transcripts` | Destination folder for transcripts |
+| `--no-diarization` | | `False` | Disable speaker diarization |
+| `--with-timestamps` | | `True` | Include phrase/chunk timestamps in the output |
+| `--keyterms` | | `None` | Comma-separated domain terms to bias recognition (`saaras:v4` only) |
+| `--output-dir` | `-o` | `<path>/sarvam_transcripts` | Destination folder for transcripts |
 | `--batch-size` | | `20` | Audio files uploaded per API batch job |
 | `--api-key` | | Env / `.env` | Sarvam AI subscription key |
 
@@ -311,7 +335,7 @@ python sarvam_tts.py "C:\Users\me\story.txt" --language te-IN -o "C:\Users\me\au
 | `path` | | `.` (Current Dir) | Path to a text file or a folder of `.txt`/`.md` files |
 | `--text` | | `None` | Synthesize this literal text instead of reading files |
 | `--language` / `--language-code` | | Required | Target language BCP-47 code, e.g. `hi-IN` |
-| `--speaker` | | Model default (`shubh` for `bulbul:v3`) | Speaker persona |
+| `--speaker` | | Model default (`shubh` for `bulbul:v3`) | Speaker persona (37 for `bulbul:v3`, 7 for `bulbul:v2`) |
 | `--model` | | `bulbul:v3` | TTS model (`bulbul:v2` or `bulbul:v3`) |
 | `--pace` | | `1.0` | Speaking pace; v3 range 0.5-2.0, v2 range 0.3-3.0 |
 | `--pitch` | | Model default | Voice pitch adjustment (`bulbul:v2` only) |
@@ -319,6 +343,8 @@ python sarvam_tts.py "C:\Users\me\story.txt" --language te-IN -o "C:\Users\me\au
 | `--temperature` | | Model default | Sampling temperature (`bulbul:v3` only) |
 | `--sample-rate` | | `22050` | Audio sample rate in Hz (8000, 16000, 22050, 24000, 32000, 44100, 48000) |
 | `--codec` / `--output-audio-codec` | | `wav` | Output codec: `wav`, `mp3`, `flac`, `aac`, `opus`, `linear16`, `mulaw`, `alaw` |
+| `--dict-id` | | `None` | Optional pronunciation dictionary ID (Sarvam Pronunciation Dictionary) |
+| `--enable-cached-responses` | | `False` | Enable server-side cached responses for deterministic, faster responses |
 | `--enable-preprocessing` | | `False` | Enable text normalization/preprocessing (`bulbul:v2` only) |
 | `--list-speakers` | | `False` | List the available speakers per model and exit |
 | `--output-dir` | `-o` | `<path>/sarvam_tts_audio` | Output directory for generated audio |
@@ -414,11 +440,12 @@ sarvam_ocr_output/
 `app.py` is an optional [Gradio](https://www.gradio.app/) web UI that lets you interactively test the suite's tools from your browser instead of the command line. It is an additive layer: rather than reimplementing anything, it imports each tool script's existing worker functions and constants and calls them in-process, so the "one tool = one script" design of the CLIs is untouched.
 
 ### Features
-* **Three tabs**: The UI exposes the tools that operate on a single input:
-  * **Translate**: source and target language, model, mode, output script, numerals format, and speaker gender, returning the translated text and the detected source language.
-  * **Text-to-Speech**: language, model, speaker (refreshed per model), sample rate, codec, and pace, plus `bulbul:v3` temperature and `bulbul:v2` pitch, loudness, and enable-preprocessing, with in-browser audio playback and download.
-  * **Document OCR**: file upload with language, output format, content type, and an optional model, rendering the extracted content as Markdown alongside a page-count/job summary.
-* **CLI tools only**: Speech Transcription (`transcribe_sarvam.py`) and the Image Renamer (`sarvam_image_renamer.py`) are batch/folder oriented and remain command-line only; they are intentionally not exposed in the UI.
+* **Four tabs**: The UI exposes interactive web testing for all core single-item capabilities:
+  * **Speech-to-Text**: audio file upload or direct microphone recording, model selection (`saaras:v4`, `saaras:v3`), output modes (`transcribe`, `translate` to English, `verbatim`, `translit`, `codemix`), language selection, speaker diarization, and custom domain keyterms.
+  * **Text-to-Speech**: language, model, 44 selectable speaker personas (refreshed per model), sample rate, codec, pace, pronunciation dictionary ID (`dict_id`), cached responses, plus `bulbul:v3` temperature and `bulbul:v2` pitch/loudness controls, with in-browser audio playback and download.
+  * **Translate**: source and target language across 23 languages, model (`mayura:v1`, `sarvam-translate:v1`), register modes, output scripts, numerals format, and speaker gender, returning the translated text and the detected source language.
+  * **Document OCR**: document upload (PDF, PNG, JPG, WebP, etc.) with language, output format (Markdown, HTML, JSON), content type (printed, handwritten, mixed), and optional model, rendering the extracted content alongside a page-count/job summary.
+* **CLI tools only**: The Image Renamer (`sarvam_image_renamer.py`) is a recursive batch/folder oriented CLI tool with rollback history and remains command-line only.
 * **API-key field with fallback**: A password field accepts your Sarvam AI key. Leave it blank to fall back to the same `SARVAM_API_KEY` environment variable or `.env` file the CLIs use. The key is never logged or echoed.
 * **Non-destructive**: Generated audio and uploads are handled in temporary files; your inputs are never modified.
 

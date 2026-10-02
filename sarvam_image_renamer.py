@@ -268,26 +268,48 @@ def analyze_image_with_sarvam(client, filepath, max_retries=5, initial_backoff=2
             job = client.document_intelligence.create_job(language="en-IN", output_format="html")
             job.upload_file(str(filepath))
             job.start()
-            job.wait_until_complete()
+            status = job.wait_until_complete()
 
-            # Download output zip into system temporary directory
+            # Ensure job completed successfully before attempting download
+            job_state = getattr(status, "job_state", "") or ""
+            if str(job_state).lower() in ("failed", "error", "cancelled", "canceled", "rejected"):
+                raise RuntimeError(f"Document intelligence job ended with state '{job_state}'")
+
+            # Download output into system temporary directory
             fd, temp_zip = tempfile.mkstemp(prefix="sarvam_", suffix=".zip")
             os.close(fd)
             job.download_output(temp_zip)
 
             description = ""
-            with zipfile.ZipFile(temp_zip, 'r') as z:
-                for member_name in z.namelist():
-                    if member_name.endswith('.json'):
-                        try:
-                            meta = json.loads(z.read(member_name).decode('utf-8', errors='ignore'))
-                            for block in meta.get('blocks', []):
-                                if block.get('layout_tag') == 'image':
-                                    block_text = block.get('text', '').strip()
-                                    if len(block_text) > len(description):
-                                        description = block_text
-                        except Exception:
-                            continue
+            # Inspect downloaded payload: parse zip member JSONs or direct text/json fallback
+            if zipfile.is_zipfile(temp_zip):
+                with zipfile.ZipFile(temp_zip, 'r') as z:
+                    for member_name in z.namelist():
+                        if member_name.endswith('.json'):
+                            try:
+                                meta = json.loads(z.read(member_name).decode('utf-8', errors='ignore'))
+                                for block in meta.get('blocks', []):
+                                    if block.get('layout_tag') == 'image':
+                                        block_text = block.get('text', '').strip()
+                                        if len(block_text) > len(description):
+                                            description = block_text
+                            except Exception:
+                                continue
+            else:
+                # Direct JSON/text output fallback
+                try:
+                    raw_text = Path(temp_zip).read_text(encoding='utf-8', errors='ignore')
+                    if raw_text.strip().startswith('{'):
+                        meta = json.loads(raw_text)
+                        for block in meta.get('blocks', []):
+                            if block.get('layout_tag') == 'image':
+                                block_text = block.get('text', '').strip()
+                                if len(block_text) > len(description):
+                                    description = block_text
+                    elif raw_text.strip():
+                        description = raw_text.strip()
+                except Exception:
+                    pass
 
             if temp_zip and os.path.exists(temp_zip):
                 os.remove(temp_zip)
