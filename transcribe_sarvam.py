@@ -638,7 +638,7 @@ def write_outputs(
     model: str = DEFAULT_MODEL,
     mode: str = DEFAULT_MODE,
     client: SarvamAI | None = None,
-    translate_to_english: bool = True,
+    auto_translate: bool = True,
     translation_model: str = DEFAULT_TRANSLATE_MODEL,
 ) -> tuple[Path, Path, Path, Path | None]:
     """
@@ -690,7 +690,7 @@ def write_outputs(
     translated_text = ""
     saved_docx: Path | None = None
 
-    if translate_to_english and client is not None and raw_dialogue_text:
+    if auto_translate and client is not None and raw_dialogue_text:
         # If ASR mode was already 'translate', Saaras already translated the speech to English
         if mode == "translate" or lang_detected == "en-IN":
             translated_text = raw_dialogue_text
@@ -787,7 +787,7 @@ def transcribe_single_audio(
     num_speakers: int | None = None,
     keyterms: list[str] | None = None,
     with_timestamps: bool = True,
-    translate_to_english: bool = True,
+    auto_translate: bool = True,
     translation_model: str = DEFAULT_TRANSLATE_MODEL,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -884,10 +884,10 @@ def transcribe_single_audio(
             model=model,
             mode=mode,
             client=client,
-            translate_to_english=translate_to_english,
+            auto_translate=auto_translate,
             translation_model=translation_model,
         )
-    elif translate_to_english:
+    elif auto_translate:
         # Perform in-memory translation for callers like the Gradio web UI
         segments = extract_segments(result_json)
         if segments:
@@ -990,7 +990,7 @@ def process_batch(
     with_timestamps: bool,
     num_speakers: int | None,
     keyterms: list[str] | None,
-    translate_to_english: bool = True,
+    auto_translate: bool = True,
     translation_model: str = DEFAULT_TRANSLATE_MODEL,
 ) -> tuple[int, int]:
     """
@@ -1075,7 +1075,7 @@ def process_batch(
                     model=model,
                     mode=mode,
                     client=client,
-                    translate_to_english=translate_to_english,
+                    auto_translate=auto_translate,
                     translation_model=translation_model,
                 )
                 successful += 1
@@ -1366,7 +1366,7 @@ def main() -> int:
             with_timestamps=args.with_timestamps,
             num_speakers=args.speakers,
             keyterms=keyterm_list,
-            translate_to_english=translate_to_english,
+            auto_translate=translate_to_english,
             translation_model=args.translation_model,
         )
 
