@@ -19,7 +19,7 @@ pillow>=10.0.0
 gradio>=5.0.0,<6
 # On Python 3.13 the stdlib `audioop`/`pyaudioop` modules were removed
 # (PEP 594). gradio -> pydub imports them, so pull in the `audioop-lts`
-# backport there; it is only needed on 3.13+ (a no-op on 3.8-3.12).
+# backport there; it is only needed on 3.13+ (a no-op on 3.10-3.12).
 audioop-lts; python_version >= "3.13"
 # gradio 5.x requires huggingface_hub>=0.33.5,<2.0. Cap below 2.0 to avoid a
 # future major-version break in the transitive dependency.
