@@ -1,6 +1,6 @@
 # Sarvam AI API Tools Suite
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Repository](https://img.shields.io/badge/GitHub-GeekLord%2Fsarvam--ai__api__tools-181717?logo=github)](https://github.com/GeekLord/sarvam-ai_api_tools)
 [![Author](https://img.shields.io/badge/Author-Shobhit%20Kumar%20Prabhakar-orange)](https://github.com/GeekLord)
@@ -25,7 +25,7 @@ Each tool runs standalone, handles API rate limits with polite request cooldowns
 
 ## System Requirements
 
-* Python 3.8 or higher
+* Python 3.10 or higher
 * An active [Sarvam AI API subscription key](https://dashboard.sarvam.ai/)
 
 ---
@@ -485,7 +485,7 @@ The front end ships as part of the standard dependencies, so the usual install n
 pip install -r requirements.txt
 ```
 
-> **Python 3.13 note:** The front end uses `gradio` 5.x, which works on Python 3.8 through 3.13. On Python 3.13 the stdlib `audioop`/`pyaudioop` modules were removed (PEP 594), so `requirements.txt` automatically installs the `audioop-lts` backport there. No manual steps are needed: `pip install -r requirements.txt` is enough on every supported version.
+> **Python 3.13 note:** The front end uses `gradio` 5.x, which works on Python 3.10 through 3.13. On Python 3.13 the stdlib `audioop`/`pyaudioop` modules were removed (PEP 594), so `requirements.txt` automatically installs the `audioop-lts` backport there. No manual steps are needed: `pip install -r requirements.txt` is enough on every supported version.
 
 ### Launching the app
 Start the local server (the launch command is the same on every platform):
