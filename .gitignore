@@ -81,3 +81,8 @@ ehthumbs.db
 *~
 *.tmp
 *.log
+
+# Voice recordings purged from history 2026-11-24: keep root recordings and test output out of git
+/record-*.wav
+*.amr
+test_output/
